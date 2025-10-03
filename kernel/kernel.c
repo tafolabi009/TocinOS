@@ -7,6 +7,7 @@
 #include "../include/kernel/kernel.h"
 #include "../include/kernel/memory.h"
 #include "../include/kernel/task.h"
+#include "../include/kernel/cpu_info.h"
 #include "../include/drivers/mdf.h"
 
 // VGA text mode buffer
@@ -61,6 +62,12 @@ void kernel_main(void) {
     
     kernel_print("TocinOS v1.0\n");
     kernel_print("=============\n\n");
+    
+    // Detect CPU features
+    kernel_print("[*] Detecting CPU features...\n");
+    cpu_detect();
+    cpu_print_info();
+    kernel_print("\n");
     
     // Initialize memory management
     kernel_print("[*] Initializing Physical Memory Manager...\n");
