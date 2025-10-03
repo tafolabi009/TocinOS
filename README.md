@@ -90,6 +90,67 @@ TocinOS aims to be a **modern, secure, developer-first OS** that provides:
 - Up to 32 concurrent drivers (configurable)
 - Example VGA text mode driver included
 
+### 🚨 Interrupt Handling System
+
+**Complete IDT/ISR Implementation:**
+- 256-entry Interrupt Descriptor Table (IDT)
+- CPU exception handlers (0-31): Division by zero, page fault, GPF, etc.
+- Hardware IRQ handlers (32-47): Timer, keyboard, serial, disk, etc.
+- PIC remapping to avoid conflicts with CPU exceptions
+- Custom interrupt handler registration
+- Descriptive exception messages
+
+### ⏰ System Timer (PIT)
+
+**Programmable Interval Timer:**
+- Configurable frequency (default 100 Hz)
+- System uptime tracking via tick counter
+- Timer-based delays and waits
+- Foundation for preemptive multitasking
+
+### ⌨️ PS/2 Keyboard Driver
+
+**Interrupt-Driven Keyboard Input:**
+- Full PS/2 keyboard support with IRQ handling
+- US QWERTY scancode to ASCII translation
+- Shift key support for uppercase and special characters
+- 256-byte circular input buffer
+- Blocking and non-blocking read operations
+
+### 📡 Serial Port Driver
+
+**COM Port Communication:**
+- Support for COM1, COM2, COM3, COM4
+- 38400 baud (configurable)
+- 8N1 configuration (8 bits, no parity, 1 stop bit)
+- FIFO buffering enabled
+- Hardware loopback testing
+- Debugging and diagnostic output
+
+### 🖥️ Interactive Shell/CLI
+
+**Command-Line Interface:**
+- Interactive command prompt
+- Built-in commands:
+  - `help` - Display available commands
+  - `clear` - Clear screen
+  - `cpuinfo` - Show CPU information
+  - `meminfo` - Display memory status
+  - `uptime` - Show system uptime
+  - `history` - View command history
+- Command history (10 commands)
+- Input echo and backspace support
+- Real-time keyboard input
+
+### 🔧 System Call Interface
+
+**User-Kernel Communication:**
+- INT 0x80 based system calls
+- 32-slot system call table
+- Implemented calls: exit, write, read, gettime, sleep
+- User mode (Ring 3) accessible
+- Foundation for user space programs
+
 ### 🔗 Boot Information Structure
 
 **Standardized Bootloader-to-Kernel Interface:**
@@ -305,17 +366,35 @@ MDF provides a unified interface for device drivers:
 - [x] A20 line enable
 - [x] GDT setup
 - [x] Protected mode and long mode support
+- [x] Interrupt Descriptor Table (IDT)
+- [x] Interrupt Service Routines (ISR) for exceptions and IRQs
+- [x] Programmable Interval Timer (PIT)
+- [x] PS/2 Keyboard driver with interrupts
+- [x] Serial port driver (COM1-COM4)
+- [x] System call interface (INT 0x80)
+- [x] Interactive shell/CLI with commands
 
 ### 🚧 In Progress
 - [ ] Enhanced VGA driver with graphics mode
-- [ ] Interrupt handling (IDT setup)
-- [ ] Timer and PIT support
+- [ ] FAT filesystem support (FAT12/16/32)
 
 ### 🎯 Planned Features
 - [ ] **Filesystem Support**
   - FAT12/FAT16/FAT32 implementation
   - File operations (read, write, directory listing)
   - Kernel module loading from filesystem
+- [ ] **Enhanced Graphics**
+  - VESA graphics mode support
+  - Basic drawing primitives
+  - Framebuffer access
+- [ ] **User Mode Support**
+  - Ring 3 execution
+  - Process isolation
+  - Memory protection
+- [ ] **IPC Mechanisms**
+  - Message passing
+  - Shared memory
+  - Signals
 - [ ] **UEFI Compatibility**
   - UEFI boot support
   - Graphics Output Protocol (GOP)

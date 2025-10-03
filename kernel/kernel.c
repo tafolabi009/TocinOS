@@ -8,6 +8,13 @@
 #include "../include/kernel/memory.h"
 #include "../include/kernel/task.h"
 #include "../include/kernel/cpu_info.h"
+#include "../include/kernel/idt.h"
+#include "../include/kernel/isr.h"
+#include "../include/kernel/timer.h"
+#include "../include/kernel/keyboard.h"
+#include "../include/kernel/serial.h"
+#include "../include/kernel/syscall.h"
+#include "../include/kernel/shell.h"
 #include "../include/drivers/mdf.h"
 
 // VGA text mode buffer
@@ -38,6 +45,13 @@ void kernel_print(const char *str) {
         if (*str == '\n') {
             vga_x = 0;
             vga_y++;
+        } else if (*str == '\b') {
+            // Backspace
+            if (vga_x > 0) {
+                vga_x--;
+                int offset = vga_y * VGA_WIDTH + vga_x;
+                vga_buffer[offset] = (0x0F << 8) | ' ';
+            }
         } else {
             int offset = vga_y * VGA_WIDTH + vga_x;
             vga_buffer[offset] = (0x0F << 8) | *str;
@@ -48,7 +62,15 @@ void kernel_print(const char *str) {
             }
         }
         if (vga_y >= VGA_HEIGHT) {
-            vga_y = 0;
+            // Scroll screen
+            for (int i = 0; i < VGA_WIDTH * (VGA_HEIGHT - 1); i++) {
+                vga_buffer[i] = vga_buffer[i + VGA_WIDTH];
+            }
+            // Clear last line
+            for (int i = VGA_WIDTH * (VGA_HEIGHT - 1); i < VGA_WIDTH * VGA_HEIGHT; i++) {
+                vga_buffer[i] = (0x0F << 8) | ' ';
+            }
+            vga_y = VGA_HEIGHT - 1;
         }
         str++;
     }
@@ -84,12 +106,41 @@ void kernel_main(void) {
     kernel_print("[*] Initializing MDF Driver Framework...\n");
     mdf_init();
     
+    // Initialize interrupt handling
+    kernel_print("[*] Initializing IDT...\n");
+    idt_init();
+    
+    kernel_print("[*] Initializing ISR handlers...\n");
+    isr_init();
+    
+    // Initialize timer (100 Hz)
+    kernel_print("[*] Initializing Timer (100 Hz)...\n");
+    timer_init(100);
+    
+    // Initialize keyboard
+    kernel_print("[*] Initializing Keyboard...\n");
+    keyboard_init();
+    
+    // Initialize serial port
+    kernel_print("[*] Initializing Serial Port (COM1)...\n");
+    if (serial_init(COM1) == 0) {
+        serial_write(COM1, "TocinOS serial port initialized\n");
+    }
+    
+    // Initialize system calls
+    kernel_print("[*] Initializing System Call Interface...\n");
+    syscall_init();
+    
     kernel_print("\n[OK] Kernel initialization complete!\n");
     kernel_print("[*] System ready.\n");
     
     // Start multitasking
     kernel_print("[*] Starting scheduler...\n");
     scheduler_start();
+    
+    // Initialize and run shell
+    shell_init();
+    shell_run();
     
     // Infinite loop (should never reach here)
     while (1) {
