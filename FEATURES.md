@@ -148,6 +148,69 @@ This document outlines the features implemented in TocinOS and their alignment w
 - ✅ **Magic Number**: 0xB007DA7A for validation
 - **Location**: `include/boot/boot_info.h`
 
+### 🎨 VESA Graphics Mode (NEW!)
+
+**Enhanced Graphics Support:**
+- ✅ **VESA BIOS Extensions**: Support for VBE modes
+- ✅ **Framebuffer Management**: Direct framebuffer access
+- ✅ **Drawing Primitives**: Pixels, lines (Bresenham), rectangles
+- ✅ **Text Rendering**: 8x8 bitmap font in graphics mode
+- ✅ **Color Support**: RGB to pixel format conversion (32-bit)
+- ✅ **Common Resolutions**: 640x480, 800x600, 1024x768
+- **Location**: `kernel/drivers/vesa_driver.c`, `include/drivers/vesa.h`
+
+### 💾 FAT Filesystem Support (NEW!)
+
+**Complete FAT Implementation:**
+- ✅ **FAT12/16/32**: All FAT variants supported
+- ✅ **File Operations**: Open, close, read, seek
+- ✅ **Directory Operations**: Listing and enumeration
+- ✅ **Boot Sector Parsing**: Automatic type detection
+- ✅ **Cluster Navigation**: FAT chain traversal
+- **Location**: `kernel/fat.c`, `include/kernel/fat.h`
+
+### 🔐 User Mode Support (NEW!)
+
+**Ring 3 Execution:**
+- ✅ **Task State Segment**: TSS setup and management
+- ✅ **Privilege Switching**: Ring 0 ↔ Ring 3 transitions
+- ✅ **Process Management**: 64 concurrent processes
+- ✅ **Memory Protection**: Separate stacks, page directories
+- ✅ **Process States**: Ready, Running, Blocked, Terminated
+- **Location**: `kernel/usermode.c`, `include/kernel/usermode.h`
+
+### 💿 IDE/ATA Disk Driver (NEW!)
+
+**Storage Device Support:**
+- ✅ **IDE Controller**: Primary/secondary channels (4 drives)
+- ✅ **LBA Addressing**: 28-bit LBA mode
+- ✅ **Operations**: Read/write sectors, device identification
+- ✅ **Device Info**: Model, serial number, capacity
+- ✅ **MDF Integration**: Block device driver
+- **Location**: `kernel/drivers/ide_driver.c`, `include/drivers/ide.h`
+
+### 🌐 Network Driver (NEW!)
+
+**NE2000 Ethernet Support:**
+- ✅ **NE2000 Compatible**: ISA network cards
+- ✅ **Packet I/O**: Transmit and receive
+- ✅ **MAC Address**: Hardware address retrieval
+- ✅ **Interrupts**: IRQ-based event handling
+- ✅ **Statistics**: Packet/error counters
+- ✅ **Auto-detection**: Multiple I/O base addresses
+- **Location**: `kernel/drivers/net_driver.c`, `include/drivers/net.h`
+
+### 🚀 UEFI Boot Support (NEW!)
+
+**Modern Firmware Interface:**
+- ✅ **UEFI Application**: Entry point and structure
+- ✅ **Graphics Output Protocol**: GOP definitions
+- ✅ **Memory Management**: EFI memory descriptors
+- ✅ **Boot Services**: Service table structures
+- ✅ **Boot Info**: UEFI to kernel communication
+- ✅ **Framework Complete**: Ready for gnu-efi compilation
+- **Location**: `boot/uefi/bootloader.c`, `include/boot/uefi.h`
+
 ### 🔌 Modular Driver Framework (MDF)
 
 #### Driver Architecture
@@ -217,17 +280,39 @@ This document outlines the features implemented in TocinOS and their alignment w
 
 ## 🎯 Planned Features (Roadmap)
 
-### Filesystem Support
-- 🎯 **FAT12**: Basic floppy disk support
-- 🎯 **FAT16/FAT32**: Hard drive and USB support
-- 🎯 **File Operations**: Read, write, directory listing
-- 🎯 **Kernel Module Loading**: Load additional modules from filesystem
+### Advanced Graphics
+- 🎯 **Hardware Acceleration**: GPU driver support
+- 🎯 **Window Manager**: Basic window management system
+- 🎯 **GUI Framework**: Toolkit for graphical applications
+- 🎯 **Higher Resolutions**: 1920x1080, 2560x1440 support
+
+### Enhanced Filesystem Support
+- ✅ **FAT12/16/32**: Complete implementation (NEW!)
+- 🎯 **VFS Layer**: Virtual filesystem abstraction
+- 🎯 **ext2/ext3/ext4**: Linux filesystem support
+- 🎯 **Journaling**: Crash recovery support
 
 ### UEFI Support
-- 🎯 **UEFI Boot**: Support for modern UEFI firmware
-- 🎯 **GOP Support**: Graphics Output Protocol for framebuffer
-- 🎯 **UEFI Services**: Use UEFI runtime services
+- ✅ **UEFI Boot Framework**: Complete structure (NEW!)
+- ✅ **GOP Support**: Graphics Output Protocol definitions (NEW!)
+- 🎯 **Complete Bootloader**: Full compilation with gnu-efi
+- 🎯 **UEFI Services**: Runtime services integration
 - 🎯 **Secure Boot**: Support for secure boot (optional)
+
+### User Mode and Process Management
+- ✅ **Ring 3 Support**: User mode execution (NEW!)
+- ✅ **Process Management**: Creation, termination, switching (NEW!)
+- 🎯 **User Space Programs**: Actual user applications
+- 🎯 **ELF Loader**: Load ELF executables
+- 🎯 **Fork/Exec**: Process creation syscalls
+
+### Device Drivers
+- ✅ **IDE/ATA Driver**: Storage device support (NEW!)
+- ✅ **Network Driver**: NE2000 compatible (NEW!)
+- 🎯 **AHCI Driver**: Modern SATA support
+- 🎯 **USB Support**: USB 2.0/3.0 stack
+- 🎯 **Mouse Driver**: PS/2 and USB mice
+- 🎯 **Advanced Network**: TCP/IP stack, RTL8139, E1000
 
 ### Advanced Security Features
 - 🎯 **KASLR**: Kernel Address Space Layout Randomization
