@@ -35,6 +35,7 @@ CFLAGS += -Wall -Wextra -I$(INCLUDE_DIR)
 BOOT_MBR = $(BOOT_DIR)/mbr/mbr.asm
 BOOT_STAGE2 = $(BOOT_DIR)/stage2/stage2.asm
 KERNEL_ENTRY = $(ARCH_DIR)/entry.asm
+KERNEL_ISR_ASM = $(ARCH_DIR)/isr_asm.asm
 KERNEL_C_SOURCES = $(wildcard $(KERNEL_DIR)/*.c) \
                    $(wildcard $(KERNEL_DIR)/mm/*.c) \
                    $(wildcard $(KERNEL_DIR)/task/*.c) \
@@ -42,6 +43,7 @@ KERNEL_C_SOURCES = $(wildcard $(KERNEL_DIR)/*.c) \
 
 # Object files
 KERNEL_ENTRY_OBJ = $(BUILD_DIR)/entry.o
+KERNEL_ISR_ASM_OBJ = $(BUILD_DIR)/isr_asm.o
 KERNEL_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(KERNEL_C_SOURCES)))
 
 # Output files
@@ -73,6 +75,11 @@ $(KERNEL_ENTRY_OBJ): $(KERNEL_ENTRY)
 	@echo "Building kernel entry..."
 	$(AS) $(ASFLAGS) $(KERNEL_ENTRY) -o $(KERNEL_ENTRY_OBJ)
 
+# Build ISR assembly
+$(KERNEL_ISR_ASM_OBJ): $(KERNEL_ISR_ASM)
+	@echo "Building ISR assembly..."
+	$(AS) $(ASFLAGS) $(KERNEL_ISR_ASM) -o $(KERNEL_ISR_ASM_OBJ)
+
 # Build kernel C files
 $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.c
 	@echo "Compiling $<..."
@@ -91,9 +98,9 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Link kernel
-$(KERNEL_ELF): $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJS)
+$(KERNEL_ELF): $(KERNEL_ENTRY_OBJ) $(KERNEL_ISR_ASM_OBJ) $(KERNEL_C_OBJS)
 	@echo "Linking kernel..."
-	$(LD) $(LDFLAGS) -o $(KERNEL_ELF) $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJS)
+	$(LD) $(LDFLAGS) -o $(KERNEL_ELF) $(KERNEL_ENTRY_OBJ) $(KERNEL_ISR_ASM_OBJ) $(KERNEL_C_OBJS)
 
 # Convert ELF to flat binary
 $(KERNEL_BIN): $(KERNEL_ELF)

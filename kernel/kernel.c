@@ -8,6 +8,10 @@
 #include "../include/kernel/memory.h"
 #include "../include/kernel/task.h"
 #include "../include/kernel/cpu_info.h"
+#include "../include/kernel/idt.h"
+#include "../include/kernel/isr.h"
+#include "../include/kernel/timer.h"
+#include "../include/kernel/keyboard.h"
 #include "../include/drivers/mdf.h"
 
 // VGA text mode buffer
@@ -84,8 +88,24 @@ void kernel_main(void) {
     kernel_print("[*] Initializing MDF Driver Framework...\n");
     mdf_init();
     
+    // Initialize interrupt handling
+    kernel_print("[*] Initializing IDT...\n");
+    idt_init();
+    
+    kernel_print("[*] Initializing ISR handlers...\n");
+    isr_init();
+    
+    // Initialize timer (100 Hz)
+    kernel_print("[*] Initializing Timer (100 Hz)...\n");
+    timer_init(100);
+    
+    // Initialize keyboard
+    kernel_print("[*] Initializing Keyboard...\n");
+    keyboard_init();
+    
     kernel_print("\n[OK] Kernel initialization complete!\n");
     kernel_print("[*] System ready.\n");
+    kernel_print("[*] Type something to test keyboard...\n");
     
     // Start multitasking
     kernel_print("[*] Starting scheduler...\n");
