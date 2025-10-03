@@ -13,6 +13,9 @@ stage2_start:
     ; Enable A20 line for accessing memory above 1MB
     call enable_a20
     
+    ; Display boot menu
+    call show_boot_menu
+    
     ; Load kernel from disk
     ; Kernel starts at sector 18 (after MBR + Stage2)
     mov ah, 0x02        ; BIOS read sectors function
@@ -105,6 +108,90 @@ print_string:
 .done:
     ret
 
+; Boot menu with timeout
+show_boot_menu:
+    ; Clear screen
+    mov ax, 0x0003
+    int 0x10
+    
+    ; Display TocinOS logo
+    mov si, logo_line1
+    call print_string
+    mov si, logo_line2
+    call print_string
+    mov si, logo_line3
+    call print_string
+    mov si, logo_line4
+    call print_string
+    
+    ; Display menu
+    mov si, menu_msg
+    call print_string
+    
+    ; Display options
+    mov si, option1_msg
+    call print_string
+    mov si, option2_msg
+    call print_string
+    mov si, option3_msg
+    call print_string
+    
+    ; Display timeout message
+    mov si, timeout_msg
+    call print_string
+    
+    ; Wait for timeout (5 seconds) or key press
+    mov cx, 50          ; 50 iterations * 0.1s = 5 seconds
+.wait_loop:
+    ; Check for key press
+    mov ah, 0x01        ; Check for keystroke
+    int 0x16
+    jnz .key_pressed    ; Jump if key is ready
+    
+    ; Short delay (~0.1 seconds)
+    mov ah, 0x86        ; Wait function
+    mov cx, 0x0001      ; High word
+    mov dx, 0x86A0      ; Low word (100,000 microseconds = 0.1s)
+    int 0x15
+    
+    loop .wait_loop
+    
+    ; Timeout - proceed with default boot
+    jmp .boot_default
+    
+.key_pressed:
+    ; Read the key
+    mov ah, 0x00
+    int 0x16
+    
+    ; Check which key was pressed
+    cmp al, '1'
+    je .boot_default
+    cmp al, '2'
+    je .boot_safe
+    cmp al, '3'
+    je .boot_recovery
+    
+    ; Invalid key, wait again
+    jmp show_boot_menu
+    
+.boot_default:
+    mov si, booting_msg
+    call print_string
+    ret
+    
+.boot_safe:
+    mov si, safe_mode_msg
+    call print_string
+    ret
+    
+.boot_recovery:
+    mov si, recovery_msg
+    call print_string
+    ; In recovery, we could load a different kernel or enter a minimal shell
+    ; For now, just boot normally
+    ret
+
 ; GDT for Protected Mode
 gdt_start:
 gdt_null:
@@ -137,6 +224,21 @@ stage2_msg db 'Stage 2 Bootloader loaded', 0x0D, 0x0A, 0
 entering_32bit_msg db 'Entering 32-bit mode...', 0x0D, 0x0A, 0
 entering_64bit_msg db 'Entering 64-bit mode...', 0x0D, 0x0A, 0
 kernel_err_msg db 'Kernel load error!', 0x0D, 0x0A, 0
+
+; Boot menu messages
+logo_line1 db '  _____         _       ___  ____  ', 0x0D, 0x0A, 0
+logo_line2 db ' |_   _|__   __(_) _ _ / _ \\/ ___| ', 0x0D, 0x0A, 0
+logo_line3 db '   | | / _ \\ / _| || | | | |\\___ \\ ', 0x0D, 0x0A, 0
+logo_line4 db '   |_| \\___/ \\__|_||_| |_| ||____/ ', 0x0D, 0x0A, 0x0D, 0x0A, 0
+
+menu_msg db '=== TocinOS Boot Menu ===', 0x0D, 0x0A, 0x0D, 0x0A, 0
+option1_msg db '  [1] Boot TocinOS (Default)', 0x0D, 0x0A, 0
+option2_msg db '  [2] Boot in Safe Mode', 0x0D, 0x0A, 0
+option3_msg db '  [3] Recovery Mode', 0x0D, 0x0A, 0x0D, 0x0A, 0
+timeout_msg db 'Press a key within 5 seconds or default boot will start...', 0x0D, 0x0A, 0
+booting_msg db 0x0D, 0x0A, 'Booting TocinOS...', 0x0D, 0x0A, 0
+safe_mode_msg db 0x0D, 0x0A, 'Starting in Safe Mode...', 0x0D, 0x0A, 0
+recovery_msg db 0x0D, 0x0A, 'Entering Recovery Mode...', 0x0D, 0x0A, 0
 
 [BITS 32]
 protected_mode_start:

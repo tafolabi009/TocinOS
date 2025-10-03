@@ -20,12 +20,12 @@ INCLUDE_DIR = include
 ifeq ($(ARCH),x86_64)
     ARCH_DIR = $(KERNEL_DIR)/arch/x86_64
     CFLAGS = -m64 -ffreestanding -fno-pie -nostdlib -nostdinc -fno-builtin -fno-stack-protector -mno-red-zone
-    LDFLAGS = -T linker_x86_64.ld
+    LDFLAGS = -m elf_x86_64 -T linker_x86_64.ld
     ASFLAGS = -f elf64
 else
     ARCH_DIR = $(KERNEL_DIR)/arch/x86
     CFLAGS = -m32 -ffreestanding -fno-pie -nostdlib -nostdinc -fno-builtin -fno-stack-protector
-    LDFLAGS = -T linker_x86.ld
+    LDFLAGS = -m elf_i386 -T linker_x86.ld
     ASFLAGS = -f elf32
 endif
 
@@ -47,6 +47,7 @@ KERNEL_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(KERNEL_C_SOURCES)))
 # Output files
 MBR_BIN = $(BUILD_DIR)/mbr.bin
 STAGE2_BIN = $(BUILD_DIR)/stage2.bin
+KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN = $(BUILD_DIR)/kernel.bin
 OS_IMAGE = $(BUILD_DIR)/TocinOS.img
 
@@ -90,9 +91,14 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Link kernel
-$(KERNEL_BIN): $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJS)
+$(KERNEL_ELF): $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJS)
 	@echo "Linking kernel..."
-	$(LD) $(LDFLAGS) -o $(KERNEL_BIN) $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJS)
+	$(LD) $(LDFLAGS) -o $(KERNEL_ELF) $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJS)
+
+# Convert ELF to flat binary
+$(KERNEL_BIN): $(KERNEL_ELF)
+	@echo "Converting kernel to flat binary..."
+	$(OBJCOPY) -O binary $(KERNEL_ELF) $(KERNEL_BIN)
 
 # Create OS image
 $(OS_IMAGE): $(MBR_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
