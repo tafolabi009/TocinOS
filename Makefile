@@ -20,12 +20,12 @@ INCLUDE_DIR = include
 ifeq ($(ARCH),x86_64)
     ARCH_DIR = $(KERNEL_DIR)/arch/x86_64
     CFLAGS = -m64 -ffreestanding -fno-pie -nostdlib -nostdinc -fno-builtin -fno-stack-protector -mno-red-zone
-    LDFLAGS = -T linker_x86_64.ld
+    LDFLAGS = -m elf_x86_64 -T linker_x86_64.ld
     ASFLAGS = -f elf64
 else
     ARCH_DIR = $(KERNEL_DIR)/arch/x86
     CFLAGS = -m32 -ffreestanding -fno-pie -nostdlib -nostdinc -fno-builtin -fno-stack-protector
-    LDFLAGS = -T linker_x86.ld
+    LDFLAGS = -m elf_i386 -T linker_x86.ld
     ASFLAGS = -f elf32
 endif
 
