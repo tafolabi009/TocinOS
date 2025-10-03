@@ -15,7 +15,12 @@
 #include "../include/kernel/serial.h"
 #include "../include/kernel/syscall.h"
 #include "../include/kernel/shell.h"
+#include "../include/kernel/usermode.h"
+#include "../include/kernel/fat.h"
 #include "../include/drivers/mdf.h"
+#include "../include/drivers/vesa.h"
+#include "../include/drivers/ide.h"
+#include "../include/drivers/net.h"
 
 // VGA text mode buffer
 #define VGA_MEMORY 0xB8000
@@ -130,6 +135,36 @@ void kernel_main(void) {
     // Initialize system calls
     kernel_print("[*] Initializing System Call Interface...\n");
     syscall_init();
+    
+    // Initialize user mode support
+    kernel_print("[*] Initializing User Mode Support...\n");
+    if (usermode_init() == 0) {
+        kernel_print("    User mode support enabled\n");
+    }
+    
+    // Initialize VESA graphics
+    kernel_print("[*] Initializing VESA Graphics...\n");
+    if (vesa_init() == 0) {
+        kernel_print("    VESA graphics initialized\n");
+    } else {
+        kernel_print("    VESA not available\n");
+    }
+    
+    // Initialize IDE disk driver
+    kernel_print("[*] Initializing IDE Disk Driver...\n");
+    if (ide_init() == 0) {
+        kernel_print("    IDE driver initialized\n");
+    } else {
+        kernel_print("    No IDE drives detected\n");
+    }
+    
+    // Initialize network driver
+    kernel_print("[*] Initializing Network Driver...\n");
+    if (net_init() == 0) {
+        kernel_print("    Network driver initialized\n");
+    } else {
+        kernel_print("    No network card detected\n");
+    }
     
     kernel_print("\n[OK] Kernel initialization complete!\n");
     kernel_print("[*] System ready.\n");
