@@ -146,3 +146,11 @@ IRQ 12, 44          ; Mouse
 IRQ 13, 45          ; Coprocessor
 IRQ 14, 46          ; ATA1
 IRQ 15, 47          ; ATA2
+
+; System call handler (interrupt 0x80)
+global isr128
+isr128:
+    cli
+    push byte 0         ; Push dummy error code
+    push byte 128       ; Push interrupt number (0x80 = 128)
+    jmp isr_common_stub

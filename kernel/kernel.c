@@ -12,6 +12,8 @@
 #include "../include/kernel/isr.h"
 #include "../include/kernel/timer.h"
 #include "../include/kernel/keyboard.h"
+#include "../include/kernel/serial.h"
+#include "../include/kernel/syscall.h"
 #include "../include/kernel/shell.h"
 #include "../include/drivers/mdf.h"
 
@@ -118,6 +120,16 @@ void kernel_main(void) {
     // Initialize keyboard
     kernel_print("[*] Initializing Keyboard...\n");
     keyboard_init();
+    
+    // Initialize serial port
+    kernel_print("[*] Initializing Serial Port (COM1)...\n");
+    if (serial_init(COM1) == 0) {
+        serial_write(COM1, "TocinOS serial port initialized\n");
+    }
+    
+    // Initialize system calls
+    kernel_print("[*] Initializing System Call Interface...\n");
+    syscall_init();
     
     kernel_print("\n[OK] Kernel initialization complete!\n");
     kernel_print("[*] System ready.\n");
