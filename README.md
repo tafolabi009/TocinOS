@@ -305,11 +305,16 @@ MDF provides a unified interface for device drivers:
 - [x] A20 line enable
 - [x] GDT setup
 - [x] Protected mode and long mode support
+- [x] Interrupt Descriptor Table (IDT)
+- [x] Interrupt Service Routines (ISR)
+- [x] Programmable Interval Timer (PIT)
+- [x] PS/2 Keyboard driver with interrupts
 
 ### 🚧 In Progress
-- [ ] Enhanced VGA driver with graphics mode
-- [ ] Interrupt handling (IDT setup)
-- [ ] Timer and PIT support
+- [x] Enhanced VGA driver with graphics mode
+- [x] Interrupt handling (IDT setup)
+- [x] Timer and PIT support
+- [x] Keyboard driver (PS/2 with interrupts)
 
 ### 🎯 Planned Features
 - [ ] **Filesystem Support**

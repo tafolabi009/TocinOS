@@ -12,6 +12,7 @@
 #include "../include/kernel/isr.h"
 #include "../include/kernel/timer.h"
 #include "../include/kernel/keyboard.h"
+#include "../include/kernel/shell.h"
 #include "../include/drivers/mdf.h"
 
 // VGA text mode buffer
@@ -42,6 +43,13 @@ void kernel_print(const char *str) {
         if (*str == '\n') {
             vga_x = 0;
             vga_y++;
+        } else if (*str == '\b') {
+            // Backspace
+            if (vga_x > 0) {
+                vga_x--;
+                int offset = vga_y * VGA_WIDTH + vga_x;
+                vga_buffer[offset] = (0x0F << 8) | ' ';
+            }
         } else {
             int offset = vga_y * VGA_WIDTH + vga_x;
             vga_buffer[offset] = (0x0F << 8) | *str;
@@ -52,7 +60,15 @@ void kernel_print(const char *str) {
             }
         }
         if (vga_y >= VGA_HEIGHT) {
-            vga_y = 0;
+            // Scroll screen
+            for (int i = 0; i < VGA_WIDTH * (VGA_HEIGHT - 1); i++) {
+                vga_buffer[i] = vga_buffer[i + VGA_WIDTH];
+            }
+            // Clear last line
+            for (int i = VGA_WIDTH * (VGA_HEIGHT - 1); i < VGA_WIDTH * VGA_HEIGHT; i++) {
+                vga_buffer[i] = (0x0F << 8) | ' ';
+            }
+            vga_y = VGA_HEIGHT - 1;
         }
         str++;
     }
@@ -105,11 +121,14 @@ void kernel_main(void) {
     
     kernel_print("\n[OK] Kernel initialization complete!\n");
     kernel_print("[*] System ready.\n");
-    kernel_print("[*] Type something to test keyboard...\n");
     
     // Start multitasking
     kernel_print("[*] Starting scheduler...\n");
     scheduler_start();
+    
+    // Initialize and run shell
+    shell_init();
+    shell_run();
     
     // Infinite loop (should never reach here)
     while (1) {
