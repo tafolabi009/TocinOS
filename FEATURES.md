@@ -102,6 +102,41 @@ This document outlines the features implemented in TocinOS and their alignment w
 - ✅ **Blocking/Non-blocking**: Multiple input methods
 - **Location**: `kernel/keyboard.c`, `include/kernel/keyboard.h`
 
+#### Serial Port Driver
+- ✅ **COM Port Support**: COM1, COM2, COM3, COM4
+- ✅ **Baud Rate**: 38400 baud (configurable)
+- ✅ **Configuration**: 8N1 (8 bits, no parity, 1 stop bit)
+- ✅ **FIFO Buffering**: Hardware buffering enabled
+- ✅ **Loopback Test**: Hardware verification on initialization
+- ✅ **I/O Operations**: Blocking read/write operations
+- **Location**: `kernel/serial.c`, `include/kernel/serial.h`
+
+#### System Call Interface
+- ✅ **INT 0x80**: Standard system call interrupt
+- ✅ **System Call Table**: 32-slot handler table
+- ✅ **Implemented Calls**:
+  - `sys_exit` - Process termination
+  - `sys_write` - Write to file descriptor
+  - `sys_read` - Read from file descriptor
+  - `sys_gettime` - Get system uptime in ticks
+  - `sys_sleep` - Sleep for specified ticks
+- ✅ **DPL3 Access**: User mode accessible
+- **Location**: `kernel/syscall.c`, `include/kernel/syscall.h`
+
+#### Shell/CLI
+- ✅ **Interactive Prompt**: Command-line interface
+- ✅ **Built-in Commands**:
+  - `help` - Show available commands
+  - `clear` - Clear screen
+  - `cpuinfo` - Display CPU information
+  - `meminfo` - Display memory status
+  - `uptime` - Show system uptime
+  - `history` - View command history
+- ✅ **Command History**: Stores 10 previous commands
+- ✅ **Input Editing**: Backspace support
+- ✅ **Real-time Echo**: Character-by-character display
+- **Location**: `kernel/shell.c`, `include/kernel/shell.h`
+
 #### Boot Information Structure
 - ✅ **Standardized Interface**: Defined structure for bootloader-to-kernel communication
 - ✅ **Memory Map**: Support for BIOS memory map entries
@@ -224,13 +259,13 @@ This document outlines the features implemented in TocinOS and their alignment w
 ### Device Drivers
 - ✅ **Keyboard Driver**: PS/2 keyboard support with interrupt handling (Complete)
 - 🎯 **Enhanced VGA**: Graphics mode support
-- 🎯 **Serial Port**: COM port communication
+- ✅ **Serial Port**: COM port communication (Complete)
 - 🎯 **Storage**: IDE/AHCI disk drivers
 - 🎯 **Network**: Basic network card support
 
 ### System Calls
-- 🎯 **Syscall Interface**: User mode to kernel mode transition
-- 🎯 **System Call Table**: Organized syscall dispatch
+- ✅ **Syscall Interface**: User mode to kernel mode transition (Complete)
+- ✅ **System Call Table**: Organized syscall dispatch (Complete)
 - 🎯 **POSIX-like API**: Familiar interface for applications
 
 ### User Mode
@@ -239,8 +274,8 @@ This document outlines the features implemented in TocinOS and their alignment w
 - 🎯 **Memory Protection**: Separate user/kernel address spaces
 
 ### Shell/CLI
-- 🎯 **Command Interpreter**: Basic shell
-- 🎯 **Built-in Commands**: System utilities
+- ✅ **Command Interpreter**: Basic shell (Complete)
+- ✅ **Built-in Commands**: System utilities (Complete)
 - 🎯 **Script Support**: Simple scripting
 
 ## 📊 Feature Comparison
