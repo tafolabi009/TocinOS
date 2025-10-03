@@ -88,7 +88,85 @@ TocinOS aims to be a **modern, secure, developer-first OS** that provides:
 - Standard operations: open, close, read, write, ioctl
 - Driver states: Uninitialized, Initialized, Running, Suspended, Error
 - Up to 32 concurrent drivers (configurable)
-- Example VGA text mode driver included
+- Included drivers: VGA text mode, VESA graphics, IDE disk, Network
+
+### 🎨 VESA Graphics Support
+
+**Enhanced Graphics Mode:**
+- VESA BIOS Extensions (VBE) support
+- Framebuffer management
+- Drawing primitives:
+  - Pixel plotting
+  - Line drawing (Bresenham's algorithm)
+  - Rectangle filling
+  - Text rendering with 8x8 bitmap font
+- Color manipulation (RGB to pixel format conversion)
+- Support for common resolutions (640x480, 800x600, 1024x768)
+- 16-bit and 24-bit color modes
+
+### 💾 FAT Filesystem Support
+
+**Complete FAT Family Implementation:**
+- **FAT12**: Floppy disk support (up to 32 MB)
+- **FAT16**: Small drives (up to 4 GB)
+- **FAT32**: Large storage devices (up to 2 TB)
+- File operations:
+  - Open, close, read, seek
+  - Directory listing
+  - File attributes and metadata
+- Boot sector parsing
+- Cluster chain navigation
+- Ready for integration with disk I/O
+
+### 🔐 User Mode Support (Ring 3)
+
+**Privilege Level Management:**
+- Task State Segment (TSS) setup
+- Ring 0 (kernel) to Ring 3 (user) transitions
+- Process management:
+  - Process creation and termination
+  - Process switching
+  - Up to 64 concurrent processes
+  - Process states (Ready, Running, Blocked, Terminated)
+- Separate kernel and user stacks
+- Memory protection framework
+- Foundation for user space programs
+
+### 💿 IDE/ATA Disk Driver
+
+**Storage Device Support:**
+- IDE/ATA controller support
+- Primary and secondary channels
+- Master and slave drives (up to 4 devices)
+- LBA (Logical Block Addressing) mode
+- Sector read/write operations
+- IDENTIFY command for device detection
+- Device information (model, serial, capacity)
+- Integrated with MDF
+
+### 🌐 Network Driver
+
+**NE2000 Compatible Ethernet:**
+- NE2000 network card support
+- Packet transmission and reception
+- MAC address retrieval
+- IRQ-based interrupt handling
+- Network statistics (packets, errors)
+- Auto-detection of base I/O address
+- Foundation for TCP/IP stack
+- Integrated with MDF
+
+### 🚀 UEFI Boot Support
+
+**Modern Firmware Interface:**
+- UEFI application entry point
+- Graphics Output Protocol (GOP) structures
+- Memory map handling
+- Boot Services and Runtime Services definitions
+- UEFI boot info structure
+- Kernel loading from UEFI filesystem
+- Framebuffer setup for graphics mode
+- Foundation for secure boot
 
 ### 🚨 Interrupt Handling System
 
@@ -375,8 +453,26 @@ MDF provides a unified interface for device drivers:
 - [x] Interactive shell/CLI with commands
 
 ### 🚧 In Progress
-- [ ] Enhanced VGA driver with graphics mode
-- [ ] FAT filesystem support (FAT12/16/32)
+- [x] Enhanced VGA driver with graphics mode (VESA support)
+- [x] FAT filesystem support (FAT12/16/32)
+- [x] User mode support (Ring 3 execution)
+- [x] IDE disk driver
+- [x] Network driver (NE2000 compatible)
+- [ ] Complete UEFI bootloader compilation
+
+### 🎯 Planned Features
+- [ ] **Advanced Graphics**
+  - Hardware acceleration
+  - Window management system
+  - GUI framework
+- [ ] **Enhanced Filesystem Support**
+  - VFS layer
+  - ext2/ext3/ext4 support
+  - Journaling
+- [ ] **UEFI Enhancements**
+  - Complete UEFI bootloader
+  - Secure boot support
+  - UEFI runtime services integration
 
 ### 🎯 Planned Features
 - [ ] **Filesystem Support**
