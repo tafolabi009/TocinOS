@@ -247,6 +247,46 @@ TocinOS aims to be a **modern, secure, developer-first OS** that provides:
 - Architecture-specific code organization
 - Dedicated linker scripts
 
+### 🔐 Advanced Features Framework
+
+TocinOS now includes framework implementations for modern OS features:
+
+#### UEFI Boot Support
+- Graphics Output Protocol (GOP) module
+- UEFI filesystem access
+- Memory map handling
+- Secure boot verification support
+- Modular design for easy integration
+
+#### Security Framework
+- **KASLR**: Kernel Address Space Layout Randomization with hardware RNG support
+- **Capabilities**: Linux-compatible capability system (CAP_SYS_ADMIN, CAP_NET_BIND_SERVICE, etc.)
+- **Seccomp**: System call filtering using BPF
+- **AppArmor**: Mandatory Access Control with profile-based security
+
+#### Modern Scheduler
+- **CFS**: Completely Fair Scheduler implementation
+- Red-black tree for O(log n) task selection
+- Virtual runtime tracking
+- Priority weighting (nice -20 to +19)
+- Group scheduling support
+
+#### Advanced Memory Management
+- **zswap**: Memory compression before swapping (LZ4, ZSTD, LZO)
+- **NUMA**: Non-Uniform Memory Access support
+- **Huge Pages**: 2MB and 1GB page support
+- Transparent Huge Pages (THP)
+
+#### TocinFS - Next-Generation Filesystem
+- Copy-on-Write (CoW) operations
+- Instant snapshots (O(1))
+- Transparent compression
+- Data deduplication
+- Online defragmentation
+- Checksumming support
+
+**Note**: These are framework implementations with complete APIs and stub implementations. See [ADVANCED_FEATURES_GUIDE.md](ADVANCED_FEATURES_GUIDE.md) for details.
+
 ## Directory Structure
 
 ```
