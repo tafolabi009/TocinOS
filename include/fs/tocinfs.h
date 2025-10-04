@@ -7,7 +7,7 @@
 #ifndef TOCINFS_H
 #define TOCINFS_H
 
-#include "../../stdint.h"
+#include "../stdint.h"
 
 // TocinFS magic number
 #define TOCINFS_MAGIC 0x546F6346  // "TocF"

@@ -157,6 +157,28 @@ cfs_task_t *cfs_pick_next_task(cfs_rq_t *cfs_rq) {
 }
 
 /**
+ * Simple 64-bit division helper (avoids libgcc dependency)
+ */
+static uint64_t div64(uint64_t dividend, uint32_t divisor) {
+    if (divisor == 0) return 0;
+    
+    // For small divisors, use simple algorithm
+    uint64_t result = 0;
+    uint64_t remainder = dividend;
+    
+    // Use bit-by-bit division
+    for (int i = 63; i >= 0; i--) {
+        result <<= 1;
+        if (remainder >= ((uint64_t)divisor << i)) {
+            remainder -= ((uint64_t)divisor << i);
+            result |= 1;
+        }
+    }
+    
+    return result;
+}
+
+/**
  * Calculate task virtual runtime
  */
 uint64_t cfs_calc_vruntime(cfs_task_t *task, uint64_t delta_exec) {
@@ -164,7 +186,7 @@ uint64_t cfs_calc_vruntime(cfs_task_t *task, uint64_t delta_exec) {
     
     // Calculate weighted virtual runtime
     // vruntime increases faster for lower priority tasks
-    vruntime_delta = (delta_exec * NICE_0_LOAD) / task->load_weight;
+    vruntime_delta = div64(delta_exec * NICE_0_LOAD, task->load_weight);
     
     return task->vruntime + vruntime_delta;
 }

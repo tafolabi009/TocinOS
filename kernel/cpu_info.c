@@ -26,6 +26,10 @@ static inline void cpuid(unsigned int func, unsigned int *eax, unsigned int *ebx
  * Check if CPUID is supported
  */
 static int cpuid_supported(void) {
+#ifdef __x86_64__
+    // CPUID is always supported in x86_64 mode
+    return 1;
+#else
     unsigned int eflags1, eflags2;
     
     __asm__ volatile(
@@ -41,6 +45,7 @@ static int cpuid_supported(void) {
     );
     
     return ((eflags1 ^ eflags2) & 0x200000) != 0;
+#endif
 }
 
 /**
