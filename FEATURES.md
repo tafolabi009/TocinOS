@@ -198,7 +198,83 @@ This document outlines the features implemented in TocinOS and their alignment w
 - ✅ **Interrupts**: IRQ-based event handling
 - ✅ **Statistics**: Packet/error counters
 - ✅ **Auto-detection**: Multiple I/O base addresses
-- **Location**: `kernel/drivers/net_driver.c`, `include/drivers/net.h`
+
+### 🌐 TCP/IP Network Stack (NEW!)
+
+**Full TCP/IP Protocol Suite:**
+- ✅ **IPv4 Protocol**: Internet Protocol packet handling
+- ✅ **TCP Protocol**: Connection-oriented reliable transport
+- ✅ **UDP Protocol**: Connectionless datagram transport
+- ✅ **ICMP Protocol**: Ping and network diagnostics
+- ✅ **ARP Protocol**: MAC/IP address resolution
+- ✅ **Socket API**: BSD-style networking interface
+- ✅ **Byte Order**: Network/host byte order conversion
+- **Location**: `kernel/tcpip.c`, `include/kernel/tcpip.h`
+
+### 📁 VFS (Virtual File System) Layer (NEW!)
+
+**Filesystem Abstraction:**
+- ✅ **Unified Interface**: Common API for all filesystems
+- ✅ **Mount Management**: Dynamic filesystem mounting
+- ✅ **File Operations**: POSIX-like open, read, write, seek, close
+- ✅ **Directory Operations**: mkdir, rmdir, readdir
+- ✅ **Path Resolution**: Absolute and relative path handling
+- ✅ **File Descriptors**: 256 concurrent FDs
+- ✅ **Multiple FS Support**: FAT, ext2/3/4, and more
+- **Location**: `kernel/vfs.c`, `include/kernel/vfs.h`
+
+### 🚀 ELF Executable Loader (NEW!)
+
+**Binary Execution Support:**
+- ✅ **ELF32/64 Support**: Both 32-bit and 64-bit binaries
+- ✅ **Validation**: Magic number and architecture checks
+- ✅ **Segment Loading**: PT_LOAD program headers
+- ✅ **Memory Mapping**: Virtual address mapping
+- ✅ **BSS Initialization**: Zero-filled sections
+- ✅ **User Mode Integration**: Ring 3 process creation
+- ✅ **Entry Point**: Jump to program entry
+- **Location**: `kernel/elf.c`, `include/kernel/elf.h`
+
+### 💾 ext2/3/4 Filesystem Support (NEW!)
+
+**Linux Filesystem Family:**
+- ✅ **ext2 Base**: Second Extended Filesystem
+- ✅ **ext3 Framework**: Journaling support structure
+- ✅ **ext4 Framework**: Modern extensions structure
+- ✅ **Superblock**: Filesystem metadata parsing
+- ✅ **Block Groups**: Multiple block group support
+- ✅ **Inode Management**: File/directory metadata
+- ✅ **File I/O**: Read and write operations
+- ✅ **Directory Operations**: Entry lookup and listing
+- ✅ **Indirect Blocks**: Large file support
+- **Location**: `kernel/ext2.c`, `include/kernel/ext2.h`
+
+### 💿 AHCI/SATA Driver (NEW!)
+
+**Modern Storage Controller:**
+- ✅ **AHCI 1.0+**: Advanced Host Controller Interface
+- ✅ **SATA Support**: Serial ATA protocol
+- ✅ **Port Management**: Up to 32 SATA ports
+- ✅ **Device Detection**: Automatic SATA device discovery
+- ✅ **48-bit LBA**: Large disk support (>137GB)
+- ✅ **DMA Transfers**: Direct Memory Access
+- ✅ **Command Queuing**: Multiple concurrent commands framework
+- ✅ **FIS Protocol**: Frame Information Structures
+- **Location**: `kernel/drivers/ahci_driver.c`, `include/drivers/ahci.h`
+
+### 🔌 USB Stack (NEW!)
+
+**Universal Serial Bus Support:**
+- ✅ **Multiple Controllers**: UHCI, OHCI, EHCI, xHCI framework
+- ✅ **USB 1.0/1.1**: Low-speed and Full-speed
+- ✅ **USB 2.0**: High-speed (480 Mbps)
+- ✅ **USB 3.0/3.1**: SuperSpeed framework
+- ✅ **Device Enumeration**: Automatic detection and configuration
+- ✅ **Descriptors**: Device, config, interface, endpoint
+- ✅ **Transfer Types**: Control, bulk, interrupt, isochronous
+- ✅ **USB HID**: Keyboard, mouse, joystick framework
+- ✅ **USB MSC**: Mass storage (flash drives) framework
+- **Location**: `kernel/drivers/usb_driver.c`, `include/drivers/usb.h`
 
 ### 🚀 UEFI Boot Support (NEW!)
 
@@ -288,9 +364,10 @@ This document outlines the features implemented in TocinOS and their alignment w
 
 ### Enhanced Filesystem Support
 - ✅ **FAT12/16/32**: Complete implementation (NEW!)
-- 🎯 **VFS Layer**: Virtual filesystem abstraction
-- 🎯 **ext2/ext3/ext4**: Linux filesystem support
-- 🎯 **Journaling**: Crash recovery support
+- ✅ **VFS Layer**: Virtual filesystem abstraction (NEW!)
+- ✅ **ext2/ext3/ext4**: Linux filesystem framework (NEW!)
+- 🎯 **Complete ext3/4**: Full journaling and advanced features
+- 🎯 **NTFS Support**: Windows filesystem support
 
 ### UEFI Support
 - ✅ **UEFI Boot Framework**: Complete structure (NEW!)
@@ -302,17 +379,27 @@ This document outlines the features implemented in TocinOS and their alignment w
 ### User Mode and Process Management
 - ✅ **Ring 3 Support**: User mode execution (NEW!)
 - ✅ **Process Management**: Creation, termination, switching (NEW!)
+- ✅ **ELF Loader**: Load ELF executables (NEW!)
+- 🎯 **Dynamic Linking**: Shared library support
 - 🎯 **User Space Programs**: Actual user applications
-- 🎯 **ELF Loader**: Load ELF executables
 - 🎯 **Fork/Exec**: Process creation syscalls
 
 ### Device Drivers
 - ✅ **IDE/ATA Driver**: Storage device support (NEW!)
 - ✅ **Network Driver**: NE2000 compatible (NEW!)
-- 🎯 **AHCI Driver**: Modern SATA support
-- 🎯 **USB Support**: USB 2.0/3.0 stack
+- ✅ **AHCI Driver**: Modern SATA framework (NEW!)
+- ✅ **USB Support**: USB 1.1/2.0/3.0 framework (NEW!)
+- 🎯 **Complete USB**: Full controller implementation (EHCI/xHCI)
+- 🎯 **NVMe Support**: Modern SSD interface
 - 🎯 **Mouse Driver**: PS/2 and USB mice
-- 🎯 **Advanced Network**: TCP/IP stack, RTL8139, E1000
+- 🎯 **Advanced Network**: RTL8139, E1000 drivers
+
+### Networking
+- ✅ **TCP/IP Stack**: Full protocol suite framework (NEW!)
+- 🎯 **IPv6 Support**: Next-generation internet protocol
+- 🎯 **DNS Client**: Domain name resolution
+- 🎯 **DHCP Client**: Automatic IP configuration
+- 🎯 **Network Filesystems**: NFS, SMB/CIFS support
 
 ### Advanced Security Features
 - 🎯 **KASLR**: Kernel Address Space Layout Randomization

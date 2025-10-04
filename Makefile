@@ -41,7 +41,11 @@ KERNEL_C_SOURCES = $(wildcard $(KERNEL_DIR)/*.c) \
                    $(wildcard $(KERNEL_DIR)/task/*.c) \
                    $(wildcard $(KERNEL_DIR)/drivers/*.c) \
                    $(KERNEL_DIR)/fat.c \
-                   $(KERNEL_DIR)/usermode.c
+                   $(KERNEL_DIR)/usermode.c \
+                   $(KERNEL_DIR)/vfs.c \
+                   $(KERNEL_DIR)/tcpip.c \
+                   $(KERNEL_DIR)/elf.c \
+                   $(KERNEL_DIR)/ext2.c
 
 # Object files
 KERNEL_ENTRY_OBJ = $(BUILD_DIR)/entry.o

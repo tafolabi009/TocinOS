@@ -106,6 +106,11 @@ This document tracks the implementation status of all features requested for Toc
   - [x] FAT32 implementation
   - [x] File operations (open, read, write, close)
   - [x] Directory listing
+  - [x] VFS (Virtual File System) layer
+  - [x] ext2 filesystem support
+  - [x] ext3 framework (journaling structure)
+  - [x] ext4 framework (modern features)
+  - [ ] Complete ext3/4 journaling
   - [ ] Kernel module loading from filesystem (depends on full disk I/O)
 
 ### UEFI Compatibility
@@ -126,6 +131,8 @@ This document tracks the implementation status of all features requested for Toc
   - [x] Memory protection
   - [x] TSS (Task State Segment) setup
   - [x] Process management (create, terminate, switch)
+  - [x] ELF executable loader (32-bit and 64-bit)
+  - [ ] Dynamic linking support
   - [ ] User space programs
   - [ ] Complete context switching integration
 
@@ -134,10 +141,29 @@ This document tracks the implementation status of all features requested for Toc
 - **Components**:
   - [x] IDE/ATA storage driver
   - [x] Network card driver (NE2000 compatible)
+  - [x] AHCI/SATA driver framework
+  - [x] USB stack framework (1.1/2.0/3.0)
   - [x] Driver registration with MDF
-  - [ ] USB support
+  - [ ] Complete USB controller implementation (EHCI/xHCI)
+  - [ ] USB HID device support
+  - [ ] USB Mass Storage device support
+  - [ ] NVMe driver
   - [ ] Mouse driver
-  - [ ] Advanced network protocols
+
+### Network Stack
+- **Status**: ✅ Implemented (Framework Complete)
+- **Components**:
+  - [x] TCP/IP protocol suite
+  - [x] IPv4 support
+  - [x] TCP protocol
+  - [x] UDP protocol
+  - [x] ICMP protocol
+  - [x] ARP protocol
+  - [x] Socket API
+  - [ ] Complete TCP state machine
+  - [ ] IPv6 support
+  - [ ] DNS client
+  - [ ] DHCP client
 
 ### IPC Mechanisms
 - **Status**: 🎯 Planned
@@ -160,21 +186,22 @@ This document tracks the implementation status of all features requested for Toc
 ## 📊 Implementation Statistics
 
 ### Lines of Code
-- **New C Code**: ~6,200 lines (added ~3,200 lines for new features)
+- **New C Code**: ~12,400 lines (added ~9,400 lines for advanced features)
 - **New Assembly**: ~160 lines
-- **New Headers**: ~1,400 lines (added ~800 lines for new features)
-- **Total Addition**: ~7,760 lines (4,000 lines added in this update)
+- **New Headers**: ~2,800 lines (added ~2,200 lines for advanced features)
+- **Total Addition**: ~15,360 lines (11,600 lines added in this update)
 
 ### Subsystems
-- **Completed**: 12 major subsystems (5 new: VESA, FAT, UEFI, User Mode, Device Drivers)
+- **Completed**: 18 major subsystems (11 new: VESA, FAT, UEFI, User Mode, Device Drivers, VFS, TCP/IP, ELF, ext2/3/4, AHCI, USB)
 - **Partially Complete**: 0 subsystems
 - **Planned**: 5+ subsystems
 
 ### Files Added
-- **Headers**: 13 files (5 new)
-- **Implementation**: 13 files (5 new)
+- **Headers**: 19 files (11 new)
+- **Implementation**: 19 files (11 new)
 - **Assembly**: 1 file
-- **Total**: 27 new files (10 added in this update)
+- **Documentation**: 4 files (1 new)
+- **Total**: 43 new files (23 added in this update)
 
 ### Commits
 - Initial planning
