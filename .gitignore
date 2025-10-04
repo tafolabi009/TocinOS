@@ -24,3 +24,6 @@ Thumbs.db
 # Documentation
 docs/html/
 docs/latex/
+
+# Static analysis
+analysis/
