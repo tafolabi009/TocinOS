@@ -530,25 +530,90 @@ TocinOS aims to evolve into a full-featured OS with:
 
 See [FEATURES.md](FEATURES.md) for detailed feature documentation.
 
+## Development Roadmap
+
+TocinOS has an ambitious but realistic roadmap for becoming a modern, competitive operating system.
+
+### Current Status: v1.0 - Educational OS ✅
+- Solid foundation with 15,000+ lines of code
+- Modern architecture (hybrid kernel, SMP support)
+- Basic but functional core features
+
+### Roadmap to Production OS
+
+**v1.1** (3-6 months): Infrastructure & Quality
+- Testing framework, documentation, performance optimizations
+
+**v2.0** (6-12 months): Modern Filesystem
+- TocinFS with CoW, snapshots, compression
+
+**v2.5** (12-24 months): Desktop Experience  
+- Graphics stack, desktop environment, applications
+
+**v3.0** (24-36 months): Cloud & Networking
+- Complete TCP/IP, cloud sync, AI assistant
+
+**v4.0** (36-60+ months): Production Ready
+- Hardware partnerships, ecosystem, enterprise features
+
+**See [ROADMAP.md](ROADMAP.md) for complete timeline and details.**
+
+### 📚 Documentation
+
+TocinOS has comprehensive documentation to guide development:
+
+- **[ROADMAP.md](ROADMAP.md)** - 5-7 year development plan with timeline and costs
+- **[ADVANCED_FEATURES_ROADMAP.md](ADVANCED_FEATURES_ROADMAP.md)** - Technical specs for all advanced features (40KB)
+- **[IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)** - Step-by-step implementation instructions
+- **[REALISTIC_COMPARISON.md](REALISTIC_COMPARISON.md)** - Honest comparison with Linux/macOS/Windows
+- **[NEXT_STEPS.md](NEXT_STEPS.md)** - Immediate v1.1 release plan (3-6 months)
+- **[ENHANCEMENT_SUMMARY.md](ENHANCEMENT_SUMMARY.md)** - Overview of all planning documents
+- **[FEATURES.md](FEATURES.md)** - Current feature status
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture
+- **[VISION.md](VISION.md)** - Long-term vision and philosophy
+
+### 🎯 Realistic Expectations
+
+**TocinOS is not yet ready to "beat" Linux or macOS**, but has a clear path to become competitive in specific niches:
+
+- ✅ **Educational OS**: Already excellent
+- ✅ **Clean codebase**: Modern, no legacy
+- 🎯 **Embedded systems**: Low footprint (3-5 years)
+- 🎯 **Developer environments**: Fast, efficient (3-5 years)
+- 🎯 **Research platform**: Clean slate (2-3 years)
+
+**Timeline to Production**: 5-7 years with proper resources ($5-10M, 10-20 developers)
+
+See [REALISTIC_COMPARISON.md](REALISTIC_COMPARISON.md) for detailed analysis.
+
 ## Contributing
 
-TocinOS is an educational OS project and contributions are welcome! 
+TocinOS welcomes contributions! We have clear documentation and realistic goals.
+
+### How to Start Contributing
+
+1. **Read the docs**: Start with [NEXT_STEPS.md](NEXT_STEPS.md) for immediate tasks
+2. **Understand current state**: Read [REALISTIC_COMPARISON.md](REALISTIC_COMPARISON.md)
+3. **Pick a task**: Check issues tagged "good first issue"
+4. **Follow the guide**: Use [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)
 
 ### Areas for Contribution
-1. **Feature Implementation**: Pick a feature from the roadmap
-2. **Driver Development**: Write new device drivers
-3. **Documentation**: Improve guides and API documentation
-4. **Testing**: Test on real hardware and report issues
-5. **Optimization**: Performance improvements and code cleanup
+1. **v1.1 Features**: Testing framework, build improvements (see [NEXT_STEPS.md](NEXT_STEPS.md))
+2. **Core Features**: KASLR, CFS scheduler (see [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md))
+3. **Driver Development**: Write device drivers for modern hardware
+4. **Documentation**: Improve guides, add examples, write tutorials
+5. **Testing**: Write unit tests, integration tests, benchmarks
+6. **Optimization**: Performance improvements based on profiling
 
 ### Contribution Guidelines
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Test thoroughly (QEMU and real hardware if possible)
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
+3. Make your changes (follow [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md))
+4. Test thoroughly (write tests, run existing tests)
+5. Document your code (follow Doxygen style)
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request with clear description
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
