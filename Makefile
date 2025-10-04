@@ -71,10 +71,15 @@ OS_IMAGE = $(BUILD_DIR)/TocinOS.img
 
 .PHONY: all clean directories check-deps test test-unit test-integration docs docs-serve help
 
-all: check-deps directories $(OS_IMAGE)
+all: check-deps directories
 	@echo ""
-	@echo "Build complete!"
-	@echo ""
+	@START_TIME=$$(date +%s); \
+	$(MAKE) --no-print-directory $(OS_IMAGE); \
+	END_TIME=$$(date +%s); \
+	BUILD_TIME=$$((END_TIME - START_TIME)); \
+	echo ""; \
+	echo "Build complete in $${BUILD_TIME}s!"; \
+	echo ""
 
 directories:
 	@mkdir -p $(BUILD_DIR)
@@ -156,8 +161,10 @@ test: test-unit test-integration
 test-unit:
 	@echo "Running unit tests..."
 	@if [ -d tests/unit ]; then \
-		$(CC) -Iinclude -Itests/framework tests/unit/*.c tests/framework/*.c -o $(BUILD_DIR)/test_runner 2>/dev/null || true; \
-		if [ -f $(BUILD_DIR)/test_runner ]; then ./$(BUILD_DIR)/test_runner; fi \
+		mkdir -p $(BUILD_DIR); \
+		$(CC) -Itests/framework tests/test_runner.c tests/unit/*.c tests/framework/*.c -o $(BUILD_DIR)/test_runner 2>&1 || \
+		(echo "Failed to compile tests" && exit 1); \
+		$(BUILD_DIR)/test_runner; \
 	else \
 		echo "No unit tests found. Run 'make setup-tests' to create test infrastructure."; \
 	fi
@@ -230,6 +237,47 @@ setup-docs:
 		echo "Doxygen not installed. Install with: sudo apt-get install doxygen graphviz"; \
 	fi
 
+# Code quality targets
+.PHONY: format check-format analyze
+
+format:
+	@echo "Formatting code..."
+	@if command -v clang-format >/dev/null 2>&1; then \
+		find kernel include -name '*.c' -o -name '*.h' | xargs clang-format -i; \
+		echo "Code formatted successfully"; \
+	else \
+		echo "clang-format not installed. Install with: sudo apt-get install clang-format"; \
+	fi
+
+check-format:
+	@echo "Checking code format..."
+	@if command -v clang-format >/dev/null 2>&1; then \
+		find kernel include -name '*.c' -o -name '*.h' | xargs clang-format --dry-run --Werror; \
+	else \
+		echo "clang-format not installed. Install with: sudo apt-get install clang-format"; \
+	fi
+
+analyze:
+	@echo "Running static analysis..."
+	@if command -v scan-build >/dev/null 2>&1; then \
+		scan-build -o analysis make clean all; \
+		echo "Analysis complete. Results in analysis/"; \
+	else \
+		echo "scan-build not installed. Install with: sudo apt-get install clang-tools"; \
+	fi
+
+# Add license headers
+.PHONY: add-license check-license
+
+add-license:
+	@echo "Adding license headers..."
+	@python3 tools/add_license.py
+
+check-license:
+	@echo "Checking license headers..."
+	@python3 tools/add_license.py --dry-run
+
+
 # Help
 help:
 	@echo "TocinOS Build System"
@@ -253,6 +301,13 @@ help:
 	@echo "  docs-clean   - Remove generated documentation"
 	@echo "  setup-docs   - Create Doxyfile configuration"
 	@echo ""
+	@echo "Code Quality Targets:"
+	@echo "  format       - Format code with clang-format"
+	@echo "  check-format - Check code formatting"
+	@echo "  analyze      - Run static analysis with scan-build"
+	@echo "  add-license  - Add license headers to source files"
+	@echo "  check-license - Check which files need license headers"
+	@echo ""
 	@echo "Run Targets:"
 	@echo "  run          - Build and run in QEMU (32-bit)"
 	@echo "  run64        - Build and run in QEMU (64-bit)"
@@ -269,3 +324,6 @@ help:
 	@echo "  make run64           # Build and run x86-64 version"
 	@echo "  make test            # Run all tests"
 	@echo "  make docs            # Generate documentation"
+	@echo "  make format          # Format all source code"
+	@echo "  make analyze         # Run static analysis"
+

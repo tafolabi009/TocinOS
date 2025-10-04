@@ -1,5 +1,11 @@
 /**
- * TocinOS Advanced Memory Management Header
+ * @file memory.h
+ * @brief TocinOS Advanced Memory Management
+ * @author TocinOS Team
+ * 
+ * This file contains the comprehensive memory management API for TocinOS,
+ * including physical memory management (PMM), virtual memory management (VMM),
+ * buddy allocator, slab allocator, and NUMA support.
  * 
  * Features:
  * - Buddy allocator for efficient power-of-2 allocations
@@ -15,31 +21,107 @@
 
 #include <stdint.h>
 
-// Page size definitions
-#define PAGE_SIZE 4096
-#define PAGE_SHIFT 12
+/** @defgroup PageDefs Page Size Definitions
+ * @{
+ */
+#define PAGE_SIZE 4096          /**< Standard page size (4KB) */
+#define PAGE_SHIFT 12           /**< Page size shift (2^12 = 4096) */
+/** @} */
 
-// Page flags
-#define PAGE_PRESENT    0x001
-#define PAGE_WRITE      0x002
-#define PAGE_USER       0x004
-#define PAGE_PWT        0x008  // Page Write-Through
-#define PAGE_PCD        0x010  // Page Cache Disable
-#define PAGE_ACCESSED   0x020
-#define PAGE_DIRTY      0x040
-#define PAGE_PAT        0x080  // Page Attribute Table
-#define PAGE_GLOBAL     0x100
-#define PAGE_COW        0x200  // Copy-on-Write (custom flag)
+/** @defgroup PageFlags Page Table Flags
+ * @{
+ */
+#define PAGE_PRESENT    0x001   /**< Page is present in memory */
+#define PAGE_WRITE      0x002   /**< Page is writable */
+#define PAGE_USER       0x004   /**< Page is user-accessible */
+#define PAGE_PWT        0x008   /**< Page Write-Through */
+#define PAGE_PCD        0x010   /**< Page Cache Disable */
+#define PAGE_ACCESSED   0x020   /**< Page has been accessed */
+#define PAGE_DIRTY      0x040   /**< Page has been written to */
+#define PAGE_PAT        0x080   /**< Page Attribute Table */
+#define PAGE_GLOBAL     0x100   /**< Global page (not flushed on CR3 reload) */
+#define PAGE_COW        0x200   /**< Copy-on-Write (custom flag) */
+/** @} */
 
 // ==================== PHYSICAL MEMORY MANAGER (PMM) ====================
 
-// Basic PMM functions
+/**
+ * @brief Initialize the Physical Memory Manager
+ * 
+ * Sets up the page frame allocator and bitmap for tracking free pages.
+ */
 void pmm_init(void);
+
+/**
+ * @brief Allocate a physical page
+ * 
+ * Allocates a single 4KB physical page from the page frame allocator.
+ * The page is marked as used and cannot be allocated again until freed.
+ * 
+ * @return Physical address of allocated page, or 0 if out of memory
+ * 
+ * @note The returned address is a physical address, not virtual.
+ * @see pmm_free_page()
+ * 
+ * @code
+ * unsigned int page = pmm_alloc_page();
+ * if (page != 0) {
+ *     // Use page
+ *     pmm_free_page(page);
+ * }
+ * @endcode
+ */
 unsigned int pmm_alloc_page(void);
+
+/**
+ * @brief Free a physical page
+ * 
+ * Returns a previously allocated page to the free page pool.
+ * 
+ * @param address Physical address of the page to free
+ * 
+ * @see pmm_alloc_page()
+ */
+/**
+ * @brief Free a physical page
+ * 
+ * Returns a previously allocated page to the free page pool.
+ * 
+ * @param address Physical address of the page to free
+ * 
+ * @see pmm_alloc_page()
+ */
 void pmm_free_page(unsigned int address);
+
+/**
+ * @brief Mark a physical page as used
+ * 
+ * Marks a page as used in the page bitmap without actually allocating it.
+ * Useful for reserving memory regions (e.g., kernel, BIOS).
+ * 
+ * @param page Page number (not address) to mark as used
+ */
 void pmm_set_page_used(unsigned int page);
+
+/**
+ * @brief Get total number of pages
+ * 
+ * @return Total number of physical pages in the system
+ */
 unsigned int pmm_get_total_pages(void);
+
+/**
+ * @brief Get number of used pages
+ * 
+ * @return Number of pages currently allocated
+ */
 unsigned int pmm_get_used_pages(void);
+
+/**
+ * @brief Get number of free pages
+ * 
+ * @return Number of pages available for allocation
+ */
 unsigned int pmm_get_free_pages(void);
 
 // ==================== BUDDY ALLOCATOR ====================
