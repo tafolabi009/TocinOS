@@ -39,13 +39,7 @@ KERNEL_ISR_ASM = $(ARCH_DIR)/isr_asm.asm
 KERNEL_C_SOURCES = $(wildcard $(KERNEL_DIR)/*.c) \
                    $(wildcard $(KERNEL_DIR)/mm/*.c) \
                    $(wildcard $(KERNEL_DIR)/task/*.c) \
-                   $(wildcard $(KERNEL_DIR)/drivers/*.c) \
-                   $(KERNEL_DIR)/fat.c \
-                   $(KERNEL_DIR)/usermode.c \
-                   $(KERNEL_DIR)/vfs.c \
-                   $(KERNEL_DIR)/tcpip.c \
-                   $(KERNEL_DIR)/elf.c \
-                   $(KERNEL_DIR)/ext2.c
+                   $(wildcard $(KERNEL_DIR)/drivers/*.c)
 
 # Object files
 KERNEL_ENTRY_OBJ = $(BUILD_DIR)/entry.o
