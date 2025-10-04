@@ -71,10 +71,15 @@ OS_IMAGE = $(BUILD_DIR)/TocinOS.img
 
 .PHONY: all clean directories check-deps test test-unit test-integration docs docs-serve help
 
-all: check-deps directories $(OS_IMAGE)
+all: check-deps directories
 	@echo ""
-	@echo "Build complete!"
-	@echo ""
+	@START_TIME=$$(date +%s); \
+	$(MAKE) --no-print-directory $(OS_IMAGE); \
+	END_TIME=$$(date +%s); \
+	BUILD_TIME=$$((END_TIME - START_TIME)); \
+	echo ""; \
+	echo "Build complete in $${BUILD_TIME}s!"; \
+	echo ""
 
 directories:
 	@mkdir -p $(BUILD_DIR)
@@ -156,8 +161,10 @@ test: test-unit test-integration
 test-unit:
 	@echo "Running unit tests..."
 	@if [ -d tests/unit ]; then \
-		$(CC) -Iinclude -Itests/framework tests/unit/*.c tests/framework/*.c -o $(BUILD_DIR)/test_runner 2>/dev/null || true; \
-		if [ -f $(BUILD_DIR)/test_runner ]; then ./$(BUILD_DIR)/test_runner; fi \
+		mkdir -p $(BUILD_DIR); \
+		$(CC) -Itests/framework tests/test_runner.c tests/unit/*.c tests/framework/*.c -o $(BUILD_DIR)/test_runner 2>&1 || \
+		(echo "Failed to compile tests" && exit 1); \
+		$(BUILD_DIR)/test_runner; \
 	else \
 		echo "No unit tests found. Run 'make setup-tests' to create test infrastructure."; \
 	fi
