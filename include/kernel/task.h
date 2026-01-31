@@ -7,12 +7,41 @@
  * - CPU affinity and load balancing
  * - Priority inheritance for synchronization
  * - Comprehensive scheduler statistics
+ * - POSIX-like threading with clone() support
+ * - Thread-Local Storage (TLS) support
+ * - Futex-based synchronization
  */
 
 #ifndef TASK_H
 #define TASK_H
 
 #include <stdint.h>
+
+// clone() flags - for creating threads
+#define CLONE_VM        0x00000100   // Share memory space
+#define CLONE_FS        0x00000200   // Share filesystem info
+#define CLONE_FILES     0x00000400   // Share file descriptor table
+#define CLONE_SIGHAND   0x00000800   // Share signal handlers
+#define CLONE_THREAD    0x00010000   // Same thread group
+#define CLONE_SYSVSEM   0x00040000   // Share SysV semaphore undo
+#define CLONE_SETTLS    0x00080000   // Set TLS for child
+#define CLONE_PARENT_SETTID  0x00100000   // Set parent's TID
+#define CLONE_CHILD_CLEARTID 0x00200000   // Clear TID on exit
+#define CLONE_CHILD_SETTID   0x01000000   // Set child's TID
+
+// futex operations
+#define FUTEX_WAIT          0
+#define FUTEX_WAKE          1
+#define FUTEX_WAIT_PRIVATE  128
+#define FUTEX_WAKE_PRIVATE  129
+
+// Thread states (extension of task states)
+#define THREAD_JOINABLE     0x01
+#define THREAD_DETACHED     0x02
+#define THREAD_EXITED       0x04
+
+// Maximum threads per process
+#define MAX_THREADS_PER_PROCESS 64
 
 // Task scheduling policies
 typedef enum {
@@ -86,6 +115,39 @@ typedef struct task {
     uint32_t stack_base;       // Stack base address
     uint32_t stack_size;       // Stack size
     
+    // ===== Threading Support (Phase 3.2) =====
+    
+    // Thread identification
+    uint32_t tid;              // Thread ID (unique across system)
+    uint32_t tgid;             // Thread Group ID (PID of group leader)
+    struct task *group_leader; // Thread group leader (main thread)
+    struct task *thread_next;  // Next thread in same group
+    struct task *thread_prev;  // Previous thread in same group
+    int thread_count;          // Number of threads (only valid for group leader)
+    
+    // Thread flags
+    uint32_t clone_flags;      // Flags passed to clone()
+    uint32_t thread_flags;     // THREAD_JOINABLE, THREAD_DETACHED, etc.
+    int exit_code;             // Exit code for pthread_join
+    
+    // Thread-Local Storage (TLS)
+    uint32_t tls_base;         // Base address of TLS area
+    uint32_t tls_size;         // Size of TLS area
+    uint16_t tls_gdt_entry;    // GDT entry number for TLS segment
+    
+    // For clone()/thread creation
+    uint32_t user_stack;       // User-space stack pointer
+    uint32_t kernel_stack;     // Kernel stack base
+    uint32_t *clear_child_tid; // Address to clear on exit (for pthread)
+    uint32_t *set_child_tid;   // Address to set TID on creation
+    
+    // Futex support
+    uint32_t *futex_addr;      // Address task is waiting on
+    struct task *futex_next;   // Next task in futex wait queue
+    struct task *futex_prev;   // Previous task in futex wait queue
+    
+    // ===== End Threading Support =====
+    
     // Linked list pointers
     struct task *next;
     struct task *prev;
@@ -157,6 +219,35 @@ void scheduler_print_stats(void);
 void scheduler_enable_preemption(void);
 void scheduler_disable_preemption(void);
 int scheduler_preemption_enabled(void);
+
+// ===== Threading Support (Phase 3.2) =====
+
+// Thread creation and management
+int thread_create(uint32_t flags, void *stack, uint32_t stack_size,
+                  uint32_t *parent_tid, uint32_t *child_tid, uint32_t tls);
+int thread_clone(uint32_t flags, void *child_stack, uint32_t *parent_tid,
+                 uint32_t *child_tid, void *tls);
+void thread_exit(int exit_code);
+int thread_join(uint32_t tid, int *exit_code);
+int thread_detach(uint32_t tid);
+uint32_t thread_self(void);
+
+// Thread group management
+int thread_get_tgid(uint32_t tid);
+int thread_is_group_leader(task_t *task);
+int thread_group_count(task_t *leader);
+
+// Thread-Local Storage
+int tls_setup(task_t *task, uint32_t tls_base, uint32_t tls_size);
+uint32_t tls_get_base(void);
+int tls_set_entry(uint32_t entry, uint32_t base, uint32_t limit, uint32_t flags);
+
+// Futex operations
+int futex_wait(uint32_t *uaddr, uint32_t val, uint32_t timeout);
+int futex_wake(uint32_t *uaddr, uint32_t count);
+void futex_init(void);
+
+// ===== End Threading Support =====
 
 #define NICE_TO_PRIORITY(nice) (120 + (nice))
 #define PRIORITY_TO_NICE(prio) ((prio) - 120)

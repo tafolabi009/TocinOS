@@ -56,7 +56,7 @@ void vmm_map_page(unsigned int virtual_addr, unsigned int physical_addr, unsigne
     // Get or create page table
     if (!(kernel_directory->entries[dir_index] & PAGE_PRESENT)) {
         unsigned int table_phys = pmm_alloc_page();
-        kernel_directory->entries[dir_index] = table_phys | PAGE_PRESENT | PAGE_WRITE | flags;
+        kernel_directory->entries[dir_index] = table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
         
         page_table_t *table = (page_table_t *)(table_phys);
         for (int i = 0; i < PAGES_PER_TABLE; i++) {

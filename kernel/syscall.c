@@ -13,6 +13,7 @@
 #include "../include/kernel/usermode.h"
 #include "../include/kernel/task.h"
 #include "../include/kernel/process.h"
+#include "../include/kernel/memory.h"
 
 // External assembly interrupt handler for syscalls
 extern void isr128(void);
@@ -76,6 +77,17 @@ void syscall_init(void) {
     syscall_register(SYS_CLOSEDIR, (syscall_handler_t)sys_closedir);
     syscall_register(SYS_WAITPID, (syscall_handler_t)sys_waitpid);
     syscall_register(SYS_SPAWN, (syscall_handler_t)sys_spawn);
+    syscall_register(SYS_MMAP, (syscall_handler_t)sys_mmap);
+    syscall_register(SYS_MUNMAP, (syscall_handler_t)sys_munmap);
+    
+    // Threading syscalls (Phase 3.2)
+    syscall_register(SYS_CLONE, (syscall_handler_t)sys_clone);
+    syscall_register(SYS_GETTID, (syscall_handler_t)sys_gettid);
+    syscall_register(SYS_FUTEX, (syscall_handler_t)sys_futex);
+    syscall_register(SYS_SET_TLS, (syscall_handler_t)sys_set_tls);
+    syscall_register(SYS_GET_TLS, (syscall_handler_t)sys_get_tls);
+    syscall_register(SYS_TKILL, (syscall_handler_t)sys_tkill);
+    syscall_register(SYS_EXIT_GROUP, (syscall_handler_t)sys_exit_group);
 }
 
 /**
@@ -353,3 +365,118 @@ int sys_spawn(uint32_t path, uint32_t argv, uint32_t envp) {
     serial_printf("[SPAWN] Program returned, exit code: %d\n", spawn_context.exit_code);
     return spawn_context.exit_code;
 }
+
+/**
+ * Memory map - map virtual memory
+ * 
+ * Simplified mmap for TocinOS:
+ * - addr: hint for virtual address (0 = let kernel choose)
+ * - length: number of bytes to map
+ * - prot: protection flags (ignored for now, always RW)
+ * - flags: mapping flags (MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED)
+ * - fd: file descriptor (ignored for anonymous maps)
+ * - offset: offset in file (ignored for anonymous maps)
+ * 
+ * Returns mapped virtual address, or -1 on error
+ */
+int sys_mmap(uint32_t addr, uint32_t length, uint32_t prot, uint32_t flags, uint32_t fd) {
+    extern void serial_printf(const char *fmt, ...);
+    extern unsigned int pmm_alloc_page(void);
+    extern void vmm_map_page(unsigned int vaddr, unsigned int paddr, unsigned int flags);
+    
+    // Ignore prot and fd for now (anonymous mapping only)
+    (void)prot;
+    (void)fd;
+    
+    serial_printf("[MMAP] addr=0x%x len=%u flags=0x%x\n", addr, length, flags);
+    
+    if (length == 0) {
+        return -1;
+    }
+    
+    // Round up length to page boundary
+    uint32_t num_pages = (length + PAGE_SIZE - 1) / PAGE_SIZE;
+    
+    // Choose virtual address if not specified or MAP_FIXED
+    #define MAP_FIXED 0x10
+    #define MAP_ANONYMOUS 0x20
+    
+    uint32_t vaddr;
+    if (addr == 0 || !(flags & MAP_FIXED)) {
+        // Use a high address region for mmap
+        // Start at 0x30000000 and grow upward
+        static uint32_t mmap_next = 0x30000000;
+        vaddr = mmap_next;
+        mmap_next += num_pages * PAGE_SIZE;
+    } else {
+        vaddr = addr & ~(PAGE_SIZE - 1);  // Align to page boundary
+    }
+    
+    serial_printf("[MMAP] Mapping %u pages at 0x%x\n", num_pages, vaddr);
+    
+    // Allocate and map pages
+    for (uint32_t i = 0; i < num_pages; i++) {
+        uint32_t paddr = pmm_alloc_page();
+        if (!paddr) {
+            serial_printf("[MMAP] Out of memory!\n");
+            return -1;
+        }
+        
+        // Zero the page
+        uint8_t *p = (uint8_t *)paddr;
+        for (int j = 0; j < PAGE_SIZE; j++) {
+            p[j] = 0;
+        }
+        
+        // Map with user access
+        vmm_map_page(vaddr + i * PAGE_SIZE, paddr, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+        
+        // Invalidate TLB
+        __asm__ volatile("invlpg (%0)" : : "r"(vaddr + i * PAGE_SIZE) : "memory");
+    }
+    
+    return (int)vaddr;
+}
+
+/**
+ * Memory unmap - unmap virtual memory
+ * 
+ * addr: virtual address to unmap
+ * length: number of bytes to unmap
+ * 
+ * Returns 0 on success, -1 on error
+ */
+int sys_munmap(uint32_t addr, uint32_t length) {
+    extern void serial_printf(const char *fmt, ...);
+    extern void pmm_free_page(unsigned int address);
+    extern unsigned int vmm_get_physical(unsigned int vaddr);
+    extern void vmm_unmap_page(unsigned int vaddr);
+    
+    serial_printf("[MUNMAP] addr=0x%x len=%u\n", addr, length);
+    
+    if (length == 0) {
+        return -1;
+    }
+    
+    // Round to page boundaries
+    uint32_t start = addr & ~(PAGE_SIZE - 1);
+    uint32_t end = (addr + length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    
+    // Unmap each page
+    for (uint32_t vaddr = start; vaddr < end; vaddr += PAGE_SIZE) {
+        uint32_t paddr = vmm_get_physical(vaddr);
+        if (paddr) {
+            // Unmap virtual page
+            vmm_unmap_page(vaddr);
+            
+            // Free physical page
+            pmm_free_page(paddr);
+            
+            // Invalidate TLB
+            __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
+        }
+    }
+    
+    return 0;
+}
+

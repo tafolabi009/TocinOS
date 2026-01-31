@@ -264,6 +264,7 @@ void kernel_main(void) {
     // Use sys_spawn to run programs (tests spawn/exit return mechanism)
     extern int sys_spawn(uint32_t path, uint32_t argv, uint32_t envp);
     
+    // Quick test of echo, hello, ls
     const char *test_programs[] = {"/ECHO.ELF", "/HELLO.ELF", "/LS.ELF", (const char*)0};
     
     for (int i = 0; test_programs[i] != (const char*)0; i++) {
@@ -272,7 +273,9 @@ void kernel_main(void) {
         serial_printf("[TEST] %s returned with exit code: %d\n", test_programs[i], exit_code);
     }
     
-    serial_printf("\n=== ALL TESTS COMPLETE ===\n");
+    serial_printf("\n=== STARTING SHELL ===\n");
+    sys_spawn((uint32_t)"/SHELL.ELF", 0, 0);
+    serial_printf("\n=== SHELL EXITED ===\n");
     
     // Initialize network driver
     kernel_print("[*] Initializing Network Driver...\n");

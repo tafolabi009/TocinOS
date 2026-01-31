@@ -1,0 +1,143 @@
+name: Build TocinOS
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          nasm \
+          gcc \
+          gcc-multilib \
+          binutils \
+          make \
+          mtools \
+          dosfstools
+          
+    - name: Build kernel
+      run: |
+        make ARCH=x86 V=1
+        
+    - name: Build user programs
+      run: |
+        cd user
+        for src in *.c; do
+          name="${src%.c}"
+          echo "Building $name.elf..."
+          gcc -m32 -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector \
+              -fno-pie -no-pie -static \
+              -I libc \
+              -Wl,-Ttext=0x08048000 \
+              -Wl,--build-id=none \
+              -o "$name.elf" "$src" -lgcc || echo "Warning: Failed to build $name"
+        done
+        ls -la *.elf 2>/dev/null || echo "No ELF files built"
+        cd ..
+        
+    - name: Create disk image
+      run: |
+        # Create 10MB FAT16 disk image
+        dd if=/dev/zero of=disk.img bs=1M count=10
+        mkfs.fat -F 16 disk.img
+        
+        # Copy user programs to disk
+        if ls user/*.elf 1>/dev/null 2>&1; then
+          for elf in user/*.elf; do
+            name=$(basename "$elf" | tr 'a-z' 'A-Z')
+            mcopy -i disk.img "$elf" "::$name"
+          done
+        fi
+        
+        # Create a test file
+        echo "Hello from TocinOS!" > test.txt
+        mcopy -i disk.img test.txt ::/TEST.TXT
+        
+        # List disk contents
+        echo "Disk contents:"
+        mdir -i disk.img ::
+        
+    - name: Upload kernel artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tocinos-kernel
+        path: |
+          build/kernel.elf
+          build/kernel.bin
+          build/TocinOS.img
+        retention-days: 30
+        
+    - name: Upload disk image
+      uses: actions/upload-artifact@v4
+      with:
+        name: tocinos-disk
+        path: disk.img
+        retention-days: 30
+        
+    - name: Upload complete package
+      uses: actions/upload-artifact@v4
+      with:
+        name: tocinos-complete
+        path: |
+          build/kernel.elf
+          disk.img
+        retention-days: 30
+
+  # Optional: Test the build with QEMU
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: tocinos-complete
+        
+    - name: Install QEMU
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86
+        
+    - name: Test boot (quick smoke test)
+      run: |
+        # Run QEMU for 10 seconds and capture serial output
+        timeout 10 qemu-system-i386 \
+          -kernel build/kernel.elf \
+          -hda disk.img \
+          -display none \
+          -serial stdio \
+          -no-reboot \
+          -accel tcg,thread=single \
+          2>&1 | tee boot.log || true
+          
+        # Check for successful boot indicators
+        if grep -q "TocinOS Booting" boot.log; then
+          echo "✓ Boot sequence started"
+        else
+          echo "✗ Boot failed"
+          exit 1
+        fi
+        
+        if grep -q "FAT.*Mount successful" boot.log; then
+          echo "✓ Filesystem mounted"
+        else
+          echo "✗ Filesystem mount failed"
+          exit 1
+        fi
+        
+        echo ""
+        echo "=== Boot Log ==="
+        cat boot.log

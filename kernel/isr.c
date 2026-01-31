@@ -171,18 +171,23 @@ void isr_register_handler(uint8_t n, interrupt_handler_t handler) {
  * Common ISR handler
  */
 void isr_handler(registers_t *regs) {
+    extern void serial_printf(const char *fmt, ...);
+    
     // Check if we have a custom handler
     if (interrupt_handlers[regs->int_no] != 0) {
         interrupt_handler_t handler = interrupt_handlers[regs->int_no];
         handler(regs);
     } else {
         // Default exception handler
-        kernel_print("\n[EXCEPTION] ");
+        serial_printf("\n[EXCEPTION] int=%d ", regs->int_no);
         if (regs->int_no < 32) {
             kernel_print(exception_messages[regs->int_no]);
+            serial_printf("%s", exception_messages[regs->int_no]);
         } else {
             kernel_print("Unknown Exception");
         }
+        serial_printf("\n[EXCEPTION] EIP=0x%x CS=0x%x ERR=0x%x\n", 
+                      regs->eip, regs->cs, regs->err_code);
         kernel_print("\n");
         
         // Halt the system

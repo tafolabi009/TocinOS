@@ -38,6 +38,15 @@
 #define SYS_WAITPID     25   // Wait for specific process
 #define SYS_SPAWN       26   // Spawn and run a program (simplified exec)
 
+// Threading syscalls (Phase 3.2)
+#define SYS_CLONE       27   // Create thread/process (like Linux clone)
+#define SYS_GETTID      28   // Get thread ID
+#define SYS_FUTEX       29   // Fast userspace mutex
+#define SYS_SET_TLS     30   // Set thread-local storage base
+#define SYS_GET_TLS     31   // Get thread-local storage base
+#define SYS_TKILL       32   // Send signal to specific thread
+#define SYS_EXIT_GROUP  33   // Exit all threads in group
+
 // Maximum number of system calls
 #define SYSCALL_MAX     64
 
@@ -67,6 +76,8 @@ int sys_gettime(void);
 // Memory system calls
 int sys_brk(uint32_t addr);
 int sys_sbrk(uint32_t increment);
+int sys_mmap(uint32_t addr, uint32_t length, uint32_t prot, uint32_t flags, uint32_t fd);
+int sys_munmap(uint32_t addr, uint32_t length);
 
 // File system calls
 int sys_lseek(uint32_t fd, uint32_t offset, uint32_t whence);
@@ -80,5 +91,14 @@ int sys_closedir(uint32_t dir);
 
 // Program execution
 int sys_spawn(uint32_t path, uint32_t argv, uint32_t envp);
+
+// Threading system calls (Phase 3.2)
+int sys_clone(uint32_t flags, uint32_t stack, uint32_t parent_tid, uint32_t child_tid, uint32_t tls);
+int sys_gettid(void);
+int sys_futex(uint32_t uaddr, uint32_t op, uint32_t val, uint32_t timeout, uint32_t uaddr2);
+int sys_set_tls(uint32_t tls_base);
+int sys_get_tls(void);
+int sys_tkill(uint32_t tid, uint32_t sig);
+int sys_exit_group(uint32_t exit_code);
 
 #endif // SYSCALL_H

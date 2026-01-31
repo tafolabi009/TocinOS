@@ -109,4 +109,16 @@ static inline int syscall4(int num, int arg1, int arg2, int arg3, int arg4) {
     return ret;
 }
 
+// Syscall with 5 arguments
+static inline int syscall5(int num, int arg1, int arg2, int arg3, int arg4, int arg5) {
+    int ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3), "S"(arg4), "D"(arg5)
+        : "memory"
+    );
+    return ret;
+}
+
 #endif /* _LIBC_SYSCALL_H */
