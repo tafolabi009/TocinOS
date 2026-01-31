@@ -84,6 +84,8 @@ int ide_init(void);
 int ide_detect_devices(void);
 int ide_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void *buffer);
 int ide_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer);
+int ide_read_sector(uint8_t drive, uint32_t lba, void *buffer);
+int ide_write_sector(uint8_t drive, uint32_t lba, const void *buffer);
 ide_device_t *ide_get_device(uint8_t drive);
 int ide_identify(uint8_t drive);
 
@@ -92,5 +94,7 @@ void ide_wait_ready(uint16_t base);
 void ide_wait_drq(uint16_t base);
 uint8_t ide_status(uint16_t base);
 void ide_select_drive(uint16_t base, uint8_t drive);
+int ide_wait_ready_timeout(uint16_t base, uint32_t timeout_ms);
+int ide_wait_drq_timeout(uint16_t base, uint32_t timeout_ms);
 
 #endif // IDE_H

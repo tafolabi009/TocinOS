@@ -33,4 +33,7 @@ int serial_received(uint16_t port);
 // Check if transmit buffer is empty
 int serial_is_transmit_empty(uint16_t port);
 
+// Printf-style output to COM1
+void serial_printf(const char *fmt, ...);
+
 #endif // SERIAL_H

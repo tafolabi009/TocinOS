@@ -112,7 +112,7 @@ int profile_get_stats(profiler_t *stats) {
     stats->start_time = profiler.start_time;
     stats->total_samples = profiler.total_samples;
     stats->dropped_samples = profiler.dropped_samples;
-    stats->samples = NULL; // Don't expose internal buffer
+    stats->samples = 0; // Don't expose internal buffer
     
     return 0;
 }

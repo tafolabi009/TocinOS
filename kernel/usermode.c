@@ -6,6 +6,7 @@
 
 #include "../include/kernel/usermode.h"
 #include "../include/kernel/memory.h"
+#include "../include/kernel/gdt.h"
 
 // Global TSS
 static tss_entry_t tss = {0};
@@ -21,13 +22,8 @@ static user_process_t *current_process = 0;
  * Write TSS descriptor to GDT
  */
 static void write_tss_descriptor(void) {
-    // This is a placeholder
-    // Actual implementation would write the TSS descriptor to the GDT
-    // The descriptor format is:
-    // - Base address: &tss
-    // - Limit: sizeof(tss_entry_t) - 1
-    // - Access: 0xE9 (present, DPL=3, TSS)
-    // - Flags: 0x00
+    // Update the TSS entry in the GDT with the actual TSS address
+    gdt_update_tss((uint32_t)&tss, sizeof(tss_entry_t) - 1);
 }
 
 /**
@@ -144,9 +140,28 @@ int usermode_create_process(void (*entry_point)(void), uint32_t *pid) {
 }
 
 /**
- * Switch to user mode
+ * Switch to user mode with specific user stack
  */
+void usermode_switch_to_user_with_stack(void (*entry_point)(void), uint32_t user_esp);
+
 void usermode_switch_to_user(void (*entry_point)(void)) {
+    if (!usermode_initialized) {
+        return;
+    }
+    
+    // Use a default user stack at top of user stack area
+    // Stack grows down, so point to top of stack area
+    // USER_STACK_TOP = 0xC0000000, -0x1000 gap = 0xBFFFF000
+    // This is the top of the allocated user stack region
+    uint32_t user_esp = 0xBFFFEFF0;  // Leave some space at top
+    
+    usermode_switch_to_user_with_stack(entry_point, user_esp);
+}
+
+/**
+ * Switch to user mode with specific stack
+ */
+void usermode_switch_to_user_with_stack(void (*entry_point)(void), uint32_t user_esp) {
     if (!usermode_initialized) {
         return;
     }
@@ -165,9 +180,8 @@ void usermode_switch_to_user(void (*entry_point)(void)) {
         "mov %%ax, %%fs\n"
         "mov %%ax, %%gs\n"
         
-        "mov %%esp, %%eax\n"             // Save kernel ESP
         "pushl $0x23\n"                  // User SS
-        "pushl %%eax\n"                  // User ESP
+        "pushl %1\n"                     // User ESP
         "pushf\n"                        // EFLAGS
         "popl %%eax\n"
         "orl $0x200, %%eax\n"            // Enable interrupts in EFLAGS
@@ -176,7 +190,7 @@ void usermode_switch_to_user(void (*entry_point)(void)) {
         "pushl %0\n"                     // User EIP
         "iret\n"                         // Switch to user mode
         :
-        : "r"(entry_point)
+        : "r"(entry_point), "r"(user_esp)
         : "eax"
     );
 }

@@ -199,6 +199,7 @@ void vmm_map_page(unsigned int virtual_addr, unsigned int physical_addr, unsigne
 void vmm_unmap_page(unsigned int virtual_addr);
 void vmm_switch_directory(unsigned int directory_phys);
 unsigned int vmm_get_current_directory(void);
+unsigned int vmm_get_physical(unsigned int virtual_addr);
 
 // Advanced VMM functions
 int vmm_map_range(uint32_t virt_start, uint32_t phys_start, uint32_t size, uint32_t flags);

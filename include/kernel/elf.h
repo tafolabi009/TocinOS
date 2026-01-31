@@ -159,6 +159,7 @@ typedef struct {
 int elf_init(void);
 int elf_validate(const void *data, uint32_t size);
 int elf_load(const void *data, uint32_t size, elf_context_t *context);
+int elf_load_file(const char *path, elf_context_t *context);
 int elf_execute(elf_context_t *context);
 int elf_unload(elf_context_t *context);
 

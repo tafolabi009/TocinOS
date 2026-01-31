@@ -27,7 +27,9 @@ isr_common_stub:
     mov fs, ax
     mov gs, ax
     
+    push esp            ; Push pointer to registers as parameter
     call isr_handler    ; Call C handler
+    add esp, 4          ; Clean up parameter
     
     pop eax             ; Restore data segment
     mov ds, ax
@@ -53,7 +55,9 @@ irq_common_stub:
     mov fs, ax
     mov gs, ax
     
+    push esp            ; Push pointer to registers as parameter
     call irq_handler
+    add esp, 4          ; Clean up parameter
     
     pop eax
     mov ds, ax
@@ -151,6 +155,6 @@ IRQ 15, 47          ; ATA2
 global isr128
 isr128:
     cli
-    push byte 0         ; Push dummy error code
-    push byte 128       ; Push interrupt number (0x80 = 128)
+    push dword 0        ; Push dummy error code
+    push dword 128      ; Push interrupt number (0x80 = 128)
     jmp isr_common_stub

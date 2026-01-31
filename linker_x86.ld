@@ -5,7 +5,13 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x10000;  /* Kernel loads at 64KB */
+    . = 0x100000;  /* Kernel loads at 1MB for multiboot */
+
+    /* Multiboot header MUST be in first 8KB */
+    .multiboot : ALIGN(4)
+    {
+        *(.multiboot)
+    }
 
     .text : ALIGN(4K)
     {

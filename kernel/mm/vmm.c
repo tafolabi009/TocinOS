@@ -104,3 +104,27 @@ void vmm_switch_directory(unsigned int directory_phys) {
 unsigned int vmm_get_current_directory(void) {
     return current_directory;
 }
+
+/**
+ * Get physical address for a virtual address
+ */
+unsigned int vmm_get_physical(unsigned int virtual_addr) {
+    unsigned int dir_index = virtual_addr >> 22;
+    unsigned int table_index = (virtual_addr >> 12) & 0x3FF;
+    
+    if (!(kernel_directory->entries[dir_index] & PAGE_PRESENT)) {
+        return 0;  // Page table not present
+    }
+    
+    page_table_t *table = (page_table_t *)(kernel_directory->entries[dir_index] & ~0xFFF);
+    if (!(table->entries[table_index] & PAGE_PRESENT)) {
+        return 0;  // Page not present
+    }
+    
+    return table->entries[table_index] & ~0xFFF;
+}
+
+// Alias for compatibility
+uint32_t vmm_virt_to_phys(uint32_t virt_addr) {
+    return vmm_get_physical(virt_addr);
+}

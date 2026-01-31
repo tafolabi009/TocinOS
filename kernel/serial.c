@@ -104,3 +104,134 @@ char serial_getchar(uint16_t port) {
     // Read and return character
     return inb(port);
 }
+
+/**
+ * Print a number in hex
+ */
+static void serial_print_hex(uint16_t port, uint32_t num) {
+    const char hex_chars[] = "0123456789ABCDEF";
+    char buf[9];
+    buf[8] = 0;
+    
+    for (int i = 7; i >= 0; i--) {
+        buf[i] = hex_chars[num & 0xF];
+        num >>= 4;
+    }
+    serial_write(port, buf);
+}
+
+/**
+ * Print a number in decimal
+ */
+static void serial_print_dec(uint16_t port, int32_t num) {
+    char buf[12];
+    int i = 10;
+    int is_neg = 0;
+    
+    buf[11] = 0;
+    
+    if (num == 0) {
+        serial_putchar(port, '0');
+        return;
+    }
+    
+    if (num < 0) {
+        is_neg = 1;
+        num = -num;
+    }
+    
+    while (num > 0 && i >= 0) {
+        buf[i--] = '0' + (num % 10);
+        num /= 10;
+    }
+    
+    if (is_neg) {
+        buf[i--] = '-';
+    }
+    
+    serial_write(port, &buf[i + 1]);
+}
+
+/**
+ * Print unsigned number in decimal
+ */
+static void serial_print_udec(uint16_t port, uint32_t num) {
+    char buf[12];
+    int i = 10;
+    
+    buf[11] = 0;
+    
+    if (num == 0) {
+        serial_putchar(port, '0');
+        return;
+    }
+    
+    while (num > 0 && i >= 0) {
+        buf[i--] = '0' + (num % 10);
+        num /= 10;
+    }
+    
+    serial_write(port, &buf[i + 1]);
+}
+
+/**
+ * Simple printf for serial output
+ * Supports: %s (string), %d (decimal), %u (unsigned), %x (hex), %c (char), %p (pointer)
+ */
+void serial_printf(const char *fmt, ...) {
+    __builtin_va_list args;
+    __builtin_va_start(args, fmt);
+    
+    while (*fmt) {
+        if (*fmt == '%') {
+            fmt++;
+            switch (*fmt) {
+                case 's': {
+                    const char *s = __builtin_va_arg(args, const char *);
+                    if (s) serial_write(COM1, s);
+                    else serial_write(COM1, "(null)");
+                    break;
+                }
+                case 'd': {
+                    int32_t d = __builtin_va_arg(args, int32_t);
+                    serial_print_dec(COM1, d);
+                    break;
+                }
+                case 'u': {
+                    uint32_t u = __builtin_va_arg(args, uint32_t);
+                    serial_print_udec(COM1, u);
+                    break;
+                }
+                case 'x': {
+                    uint32_t x = __builtin_va_arg(args, uint32_t);
+                    serial_print_hex(COM1, x);
+                    break;
+                }
+                case 'p': {
+                    void *p = __builtin_va_arg(args, void *);
+                    serial_write(COM1, "0x");
+                    serial_print_hex(COM1, (uint32_t)p);
+                    break;
+                }
+                case 'c': {
+                    char c = (char)__builtin_va_arg(args, int);
+                    serial_putchar(COM1, c);
+                    break;
+                }
+                case '%': {
+                    serial_putchar(COM1, '%');
+                    break;
+                }
+                default:
+                    serial_putchar(COM1, '%');
+                    serial_putchar(COM1, *fmt);
+                    break;
+            }
+        } else {
+            serial_putchar(COM1, *fmt);
+        }
+        fmt++;
+    }
+    
+    __builtin_va_end(args);
+}

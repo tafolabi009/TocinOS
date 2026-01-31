@@ -27,32 +27,38 @@ case $TEST_MODE in
     normal)
         echo -e "${GREEN}[INFO]${NC} Running in normal mode..."
         qemu-system-i386 \
-            -drive format=raw,file=build/TocinOS.img \
-            -serial stdio
+            -kernel build/kernel.elf \
+            -hda disk.img \
+            -serial stdio \
+            -accel tcg,thread=single
         ;;
     
     headless)
         echo -e "${GREEN}[INFO]${NC} Running in headless mode..."
         qemu-system-i386 \
-            -drive format=raw,file=build/TocinOS.img \
+            -kernel build/kernel.elf \
+            -hda disk.img \
             -display none \
-            -serial stdio
+            -serial stdio \
+            -accel tcg,thread=single
         ;;
     
     x64)
         echo -e "${GREEN}[INFO]${NC} Running in 64-bit mode..."
         qemu-system-x86_64 \
-            -drive format=raw,file=build/TocinOS.img \
+            -fda build/TocinOS.img \
             -serial stdio
         ;;
     
     test)
-        echo -e "${GREEN}[INFO]${NC} Running in test mode (5s timeout)..."
-        timeout 5 qemu-system-i386 \
-            -drive format=raw,file=build/TocinOS.img \
+        echo -e "${GREEN}[INFO]${NC} Running in test mode (10s timeout)..."
+        timeout 10 qemu-system-i386 \
+            -kernel build/kernel.elf \
+            -hda disk.img \
             -display none \
             -serial stdio \
-            -no-reboot || true
+            -no-reboot \
+            -accel tcg,thread=single || true
         ;;
     
     monitor)

@@ -27,8 +27,9 @@ void pmm_init(void) {
         memory_bitmap[i] = 0;
     }
     
-    // Mark first 1MB as used (for BIOS, bootloader, kernel)
-    for (unsigned int i = 0; i < (1024 * 1024 / PAGE_SIZE); i++) {
+    // Mark first 2MB as used (for BIOS, bootloader, kernel at 1MB, and kernel data)
+    // Kernel is loaded at 0x100000 (1MB) and is about 100KB
+    for (unsigned int i = 0; i < (2 * 1024 * 1024 / PAGE_SIZE); i++) {
         pmm_set_page_used(i);
     }
 }

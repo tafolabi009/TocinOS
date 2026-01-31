@@ -6,14 +6,114 @@
 
 #include "../include/kernel/fat.h"
 #include "../include/kernel/memory.h"
+#include "../include/kernel/serial.h"
+#include "../include/drivers/ide.h"
 
 // Global FAT info
 static fat_info_t fat_info = {0};
 static int fat_mounted = 0;
-static uint8_t *fat_buffer = 0;
+static uint8_t fat_current_drive = 0;
+static uint32_t fat_partition_offset = 0;  // Starting sector of partition
 
 // Sector buffer
 static uint8_t sector_buffer[512];
+
+// MBR partition entry structure
+typedef struct {
+    uint8_t  status;           // 0x80 = active/bootable
+    uint8_t  chs_first[3];     // CHS address of first sector
+    uint8_t  type;             // Partition type
+    uint8_t  chs_last[3];      // CHS address of last sector
+    uint32_t lba_first;        // LBA of first sector
+    uint32_t sector_count;     // Number of sectors
+} __attribute__((packed)) mbr_partition_t;
+
+// MBR structure
+typedef struct {
+    uint8_t         bootstrap[446];
+    mbr_partition_t partitions[4];
+    uint16_t        signature;      // 0xAA55
+} __attribute__((packed)) mbr_t;
+
+// FAT partition type codes
+#define PART_TYPE_FAT12       0x01
+#define PART_TYPE_FAT16_SMALL 0x04
+#define PART_TYPE_FAT16       0x06
+#define PART_TYPE_FAT32       0x0B
+#define PART_TYPE_FAT32_LBA   0x0C
+#define PART_TYPE_FAT16_LBA   0x0E
+
+/**
+ * Check if partition type is FAT
+ */
+static int is_fat_partition(uint8_t type) {
+    return (type == PART_TYPE_FAT12 ||
+            type == PART_TYPE_FAT16_SMALL ||
+            type == PART_TYPE_FAT16 ||
+            type == PART_TYPE_FAT32 ||
+            type == PART_TYPE_FAT32_LBA ||
+            type == PART_TYPE_FAT16_LBA);
+}
+
+/**
+ * Detect and mount first FAT partition from MBR
+ * Returns partition start LBA, or 0 if no partition found (try raw disk)
+ */
+static uint32_t fat_find_partition(uint8_t drive) {
+    // Read MBR (sector 0)
+    if (ide_read_sector(drive, 0, sector_buffer) <= 0) {
+        return 0;
+    }
+    
+    // Check MBR signature
+    if (sector_buffer[510] != 0x55 || sector_buffer[511] != 0xAA) {
+        return 0; // Invalid MBR, try as raw FAT image
+    }
+    
+    mbr_t *mbr = (mbr_t *)sector_buffer;
+    
+    // Check if this is already a FAT boot sector (no MBR)
+    // FAT boot sectors have "FAT" at offset 0x36 (FAT12/16) or 0x52 (FAT32)
+    if ((sector_buffer[0x36] == 'F' && sector_buffer[0x37] == 'A' && sector_buffer[0x38] == 'T') ||
+        (sector_buffer[0x52] == 'F' && sector_buffer[0x53] == 'A' && sector_buffer[0x54] == 'T')) {
+        return 0; // Already a FAT boot sector, use as-is
+    }
+    
+    // Search partition table for FAT partition
+    for (int i = 0; i < 4; i++) {
+        if (is_fat_partition(mbr->partitions[i].type) && 
+            mbr->partitions[i].lba_first > 0) {
+            return mbr->partitions[i].lba_first;
+        }
+    }
+    
+    return 0; // No FAT partition found, try as raw FAT image
+}
+
+/**
+ * Initialize FAT on drive - auto-detect partitions
+ */
+int fat_init(uint8_t drive) {
+    serial_printf("[FAT] Initializing FAT on drive %u...\n", (uint32_t)drive);
+    
+    // Try to find FAT partition
+    uint32_t partition_start = fat_find_partition(drive);
+    
+    serial_printf("[FAT] Partition offset: %u sectors\n", partition_start);
+    
+    // Set partition offset
+    fat_set_partition_offset(partition_start);
+    
+    // Mount FAT filesystem
+    int result = fat_mount(drive);
+    if (result == 0) {
+        serial_printf("[FAT] Mount successful!\n");
+    } else {
+        serial_printf("[FAT] Mount failed!\n");
+    }
+    
+    return result;
+}
 
 /**
  * Detect FAT type from BPB
@@ -38,9 +138,10 @@ static uint8_t fat_detect_type(fat_bpb_t *bpb) {
  * Mount a FAT filesystem
  */
 int fat_mount(uint8_t drive) {
-    (void)drive;
+    // Store current drive
+    fat_current_drive = drive;
     
-    // Read boot sector
+    // Read boot sector (sector 0 of the partition)
     if (fat_read_sector(0, sector_buffer) != 0) {
         return -1;
     }
@@ -167,12 +268,80 @@ uint32_t fat_get_next_cluster(uint32_t cluster) {
 }
 
 /**
+ * Convert character to uppercase
+ */
+static char to_upper(char c) {
+    if (c >= 'a' && c <= 'z') {
+        return c - 32;
+    }
+    return c;
+}
+
+/**
+ * Convert a regular filename to FAT 8.3 format
+ * Input: "hello.txt" or "/hello.txt"
+ * Output: "HELLO   TXT" (11 chars, space-padded)
+ */
+static void fat_name_to_83(const char *name, char *out83) {
+    // Skip leading slash
+    if (name[0] == '/') {
+        name++;
+    }
+    
+    // Initialize with spaces
+    for (int i = 0; i < 11; i++) {
+        out83[i] = ' ';
+    }
+    
+    // Find the dot (if any)
+    int dot_pos = -1;
+    for (int i = 0; name[i] && i < 12; i++) {
+        if (name[i] == '.') {
+            dot_pos = i;
+            break;
+        }
+    }
+    
+    // Copy base name (up to 8 chars)
+    int copy_len = (dot_pos >= 0) ? dot_pos : 8;
+    for (int i = 0; i < 8 && i < copy_len && name[i]; i++) {
+        out83[i] = to_upper(name[i]);
+    }
+    
+    // Copy extension (up to 3 chars)
+    if (dot_pos >= 0 && name[dot_pos + 1]) {
+        const char *ext = &name[dot_pos + 1];
+        for (int i = 0; i < 3 && ext[i]; i++) {
+            out83[8 + i] = to_upper(ext[i]);
+        }
+    }
+}
+
+/**
+ * Compare two 8.3 filenames
+ * Returns 0 if equal, non-zero otherwise
+ */
+static int fat_compare_83(const char *a, const char *b) {
+    for (int i = 0; i < 11; i++) {
+        if (a[i] != b[i]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
  * Open a file
  */
 int fat_open(const char *path, fat_file_t *file) {
     if (!fat_mounted || !path || !file) {
         return -1;
     }
+    
+    // Convert input path to 8.3 format
+    char name83[12];
+    fat_name_to_83(path, name83);
+    name83[11] = 0;
     
     // Simple implementation: search root directory only
     uint32_t root_sector = (fat_info.type == FAT_TYPE_FAT32) ? 
@@ -183,9 +352,11 @@ int fat_open(const char *path, fat_file_t *file) {
                            fat_info.sectors_per_cluster * fat_info.bytes_per_sector / 32 :
                            fat_info.root_entry_count;
     
-    // Read root directory
-    for (uint32_t i = 0; i < max_entries / 16; i++) {
+    // Read root directory - limit to first 4 sectors for efficiency
+    uint32_t search_sectors = (max_entries / 16 > 4) ? 4 : max_entries / 16;
+    for (uint32_t i = 0; i < search_sectors; i++) {
         if (fat_read_sector(root_sector + i, sector_buffer) != 0) {
+            serial_printf("[FAT] Failed to read sector %u\n", root_sector + i);
             return -1;
         }
         
@@ -197,16 +368,32 @@ int fat_open(const char *path, fat_file_t *file) {
             if (entries[j].name[0] == 0xE5) {
                 continue; // Deleted entry
             }
+            if (entries[j].attributes & FAT_ATTR_LONG_NAME) {
+                continue; // Skip long filename entries
+            }
+            if (entries[j].attributes & FAT_ATTR_VOLUME_ID) {
+                continue; // Skip volume label
+            }
             
-            // Simple name comparison (8.3 format)
-            // This is a simplified version
-            file->first_cluster = ((uint32_t)entries[j].first_cluster_high << 16) | entries[j].first_cluster_low;
-            file->current_cluster = file->first_cluster;
-            file->position = 0;
-            file->size = entries[j].file_size;
-            file->attributes = entries[j].attributes;
-            file->is_open = 1;
-            return 0;
+            // Compare filename in 8.3 format
+            if (fat_compare_83((const char *)entries[j].name, name83) == 0) {
+                // Found the file!
+                file->first_cluster = ((uint32_t)entries[j].first_cluster_high << 16) | entries[j].first_cluster_low;
+                file->current_cluster = file->first_cluster;
+                file->position = 0;
+                file->size = entries[j].file_size;
+                file->attributes = entries[j].attributes;
+                file->is_open = 1;
+                
+                // Copy the name
+                for (int k = 0; path[k] && k < 255; k++) {
+                    file->name[k] = path[k];
+                    file->name[k + 1] = 0;
+                }
+                
+                serial_printf("[FAT] Opened: size=%u\n", file->size);
+                return 0;
+            }
         }
     }
     
@@ -292,9 +479,23 @@ int fat_seek(fat_file_t *file, uint32_t position) {
         return -1;
     }
     
+    // Clamp position to file size
+    if (position > file->size) {
+        position = file->size;
+    }
+    
     file->position = position;
+    
     // Recalculate current cluster based on position
-    // Simplified version
+    uint32_t cluster_size = fat_info.sectors_per_cluster * fat_info.bytes_per_sector;
+    uint32_t target_cluster_index = position / cluster_size;
+    
+    // Walk the cluster chain from the beginning
+    file->current_cluster = file->first_cluster;
+    for (uint32_t i = 0; i < target_cluster_index && file->current_cluster != 0xFFFFFFFF; i++) {
+        file->current_cluster = fat_get_next_cluster(file->current_cluster);
+    }
+    
     return 0;
 }
 
@@ -349,22 +550,56 @@ int fat_stat(const char *path, fat_dir_entry_t *entry) {
 }
 
 /**
- * Read a sector (placeholder - needs disk driver)
+ * Read a sector using IDE driver
  */
+extern void serial_printf(const char *fmt, ...);
 int fat_read_sector(uint32_t sector, void *buffer) {
-    (void)sector;
-    (void)buffer;
-    // This needs to be implemented with actual disk driver
-    // For now, return error
-    return -1;
+    if (!buffer) {
+        return -1;
+    }
+    
+    // Add partition offset to get absolute sector on disk
+    uint32_t abs_sector = sector + fat_partition_offset;
+    
+    // Use IDE driver to read sector
+    int result = ide_read_sector(fat_current_drive, abs_sector, buffer);
+    return (result > 0) ? 0 : -1;
 }
 
 /**
- * Write a sector (placeholder - needs disk driver)
+ * Write a sector using IDE driver
  */
 int fat_write_sector(uint32_t sector, const void *buffer) {
-    (void)sector;
-    (void)buffer;
-    // This needs to be implemented with actual disk driver
-    return -1;
+    if (!buffer) {
+        return -1;
+    }
+    
+    // Add partition offset to get absolute sector on disk
+    uint32_t abs_sector = sector + fat_partition_offset;
+    
+    // Use IDE driver to write sector
+    int result = ide_write_sector(fat_current_drive, abs_sector, buffer);
+    return (result > 0) ? 0 : -1;
+}
+
+/**
+ * Set the partition offset for FAT filesystem
+ * (for accessing partition instead of raw disk)
+ */
+void fat_set_partition_offset(uint32_t offset) {
+    fat_partition_offset = offset;
+}
+
+/**
+ * Get FAT info structure (for debugging)
+ */
+fat_info_t *fat_get_info(void) {
+    return fat_mounted ? &fat_info : (fat_info_t *)0;
+}
+
+/**
+ * Check if FAT filesystem is mounted
+ */
+int fat_is_mounted(void) {
+    return fat_mounted;
 }

@@ -15,6 +15,17 @@ static ide_channel_t ide_channels[2] = {
 
 static int ide_initialized = 0;
 
+// Default timeout in milliseconds
+#define IDE_TIMEOUT_MS 5000
+
+// Error codes
+#define IDE_ERR_NONE        0
+#define IDE_ERR_TIMEOUT    -1
+#define IDE_ERR_NO_DRIVE   -2
+#define IDE_ERR_READ_FAIL  -3
+#define IDE_ERR_WRITE_FAIL -4
+#define IDE_ERR_INVALID    -5
+
 /**
  * Read byte from port
  */
@@ -45,6 +56,54 @@ static inline uint16_t inw(uint16_t port) {
  */
 static inline void outw(uint16_t port, uint16_t val) {
     __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+/**
+ * 400ns delay by reading alternate status register
+ */
+static void ide_400ns_delay(uint16_t ctrl) {
+    inb(ctrl);
+    inb(ctrl);
+    inb(ctrl);
+    inb(ctrl);
+}
+
+/**
+ * Wait for drive to be ready with timeout
+ * Returns 0 on success, -1 on timeout
+ */
+int ide_wait_ready_timeout(uint16_t base, uint32_t timeout_ms) {
+    volatile uint32_t timeout = timeout_ms * 1000; // Approximate loop count
+    while (timeout > 0) {
+        uint8_t status = inb(base + 7);
+        if (!(status & IDE_STATUS_BSY)) {
+            return 0; // Ready
+        }
+        timeout--;
+    }
+    return -1; // Timeout
+}
+
+/**
+ * Wait for data request with timeout
+ * Returns 0 on success, -1 on timeout, -2 on error
+ */
+int ide_wait_drq_timeout(uint16_t base, uint32_t timeout_ms) {
+    volatile uint32_t timeout = timeout_ms * 1000;
+    while (timeout > 0) {
+        uint8_t status = inb(base + 7);
+        if (status & IDE_STATUS_ERR) {
+            return -2; // Error
+        }
+        if (status & IDE_STATUS_DF) {
+            return -2; // Drive fault
+        }
+        if (status & IDE_STATUS_DRQ) {
+            return 0; // Data ready
+        }
+        timeout--;
+    }
+    return -1; // Timeout
 }
 
 /**
@@ -167,30 +226,36 @@ int ide_detect_devices(void) {
  * Read sectors from disk
  */
 int ide_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) {
-    if (!ide_initialized || !buffer) {
-        return -1;
+    if (!ide_initialized || !buffer || count == 0) {
+        return IDE_ERR_INVALID;
     }
     
     uint8_t channel = drive / 2;
     uint8_t slave = drive % 2;
     uint16_t base = ide_channels[channel].base;
+    uint16_t ctrl = ide_channels[channel].ctrl;
     
     // Check if device exists
     ide_device_t *device = (slave == 0) ? &ide_channels[channel].master : &ide_channels[channel].slave;
     if (!device->present) {
-        return -1;
+        return IDE_ERR_NO_DRIVE;
     }
     
     // Wait for drive to be ready
-    ide_wait_ready(base);
+    if (ide_wait_ready_timeout(base, IDE_TIMEOUT_MS) < 0) {
+        return IDE_ERR_TIMEOUT;
+    }
     
-    // Select drive and set LBA mode
+    // Select drive and set LBA mode (bit 6 = LBA mode, bit 4 = drive select)
     outb(base + 6, 0xE0 | (slave << 4) | ((lba >> 24) & 0x0F));
+    
+    // 400ns delay after drive select
+    ide_400ns_delay(ctrl);
     
     // Set sector count
     outb(base + 2, count);
     
-    // Set LBA
+    // Set LBA address
     outb(base + 3, lba & 0xFF);
     outb(base + 4, (lba >> 8) & 0xFF);
     outb(base + 5, (lba >> 16) & 0xFF);
@@ -201,12 +266,19 @@ int ide_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) {
     // Read data
     uint16_t *buf = (uint16_t *)buffer;
     for (int i = 0; i < count; i++) {
-        ide_wait_ready(base);
-        ide_wait_drq(base);
+        // Wait for BSY to clear and DRQ to set
+        int result = ide_wait_drq_timeout(base, IDE_TIMEOUT_MS);
+        if (result < 0) {
+            return (result == -1) ? IDE_ERR_TIMEOUT : IDE_ERR_READ_FAIL;
+        }
         
+        // Read 256 words (512 bytes) per sector
         for (int j = 0; j < 256; j++) {
             buf[i * 256 + j] = inw(base);
         }
+        
+        // 400ns delay between sectors
+        ide_400ns_delay(ctrl);
     }
     
     return count;
@@ -216,30 +288,36 @@ int ide_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) {
  * Write sectors to disk
  */
 int ide_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer) {
-    if (!ide_initialized || !buffer) {
-        return -1;
+    if (!ide_initialized || !buffer || count == 0) {
+        return IDE_ERR_INVALID;
     }
     
     uint8_t channel = drive / 2;
     uint8_t slave = drive % 2;
     uint16_t base = ide_channels[channel].base;
+    uint16_t ctrl = ide_channels[channel].ctrl;
     
     // Check if device exists
     ide_device_t *device = (slave == 0) ? &ide_channels[channel].master : &ide_channels[channel].slave;
     if (!device->present) {
-        return -1;
+        return IDE_ERR_NO_DRIVE;
     }
     
     // Wait for drive to be ready
-    ide_wait_ready(base);
+    if (ide_wait_ready_timeout(base, IDE_TIMEOUT_MS) < 0) {
+        return IDE_ERR_TIMEOUT;
+    }
     
     // Select drive and set LBA mode
     outb(base + 6, 0xE0 | (slave << 4) | ((lba >> 24) & 0x0F));
     
+    // 400ns delay after drive select
+    ide_400ns_delay(ctrl);
+    
     // Set sector count
     outb(base + 2, count);
     
-    // Set LBA
+    // Set LBA address
     outb(base + 3, lba & 0xFF);
     outb(base + 4, (lba >> 8) & 0xFF);
     outb(base + 5, (lba >> 16) & 0xFF);
@@ -250,19 +328,42 @@ int ide_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void *bu
     // Write data
     const uint16_t *buf = (const uint16_t *)buffer;
     for (int i = 0; i < count; i++) {
-        ide_wait_ready(base);
-        ide_wait_drq(base);
+        // Wait for DRQ
+        int result = ide_wait_drq_timeout(base, IDE_TIMEOUT_MS);
+        if (result < 0) {
+            return (result == -1) ? IDE_ERR_TIMEOUT : IDE_ERR_WRITE_FAIL;
+        }
         
+        // Write 256 words (512 bytes) per sector
         for (int j = 0; j < 256; j++) {
             outw(base, buf[i * 256 + j]);
         }
+        
+        // 400ns delay between sectors
+        ide_400ns_delay(ctrl);
     }
     
     // Flush cache
     outb(base + 7, IDE_CMD_CACHE_FLUSH);
-    ide_wait_ready(base);
+    if (ide_wait_ready_timeout(base, IDE_TIMEOUT_MS) < 0) {
+        return IDE_ERR_TIMEOUT;
+    }
     
     return count;
+}
+
+/**
+ * Read a single sector from disk (convenience wrapper)
+ */
+int ide_read_sector(uint8_t drive, uint32_t lba, void *buffer) {
+    return ide_read_sectors(drive, lba, 1, buffer);
+}
+
+/**
+ * Write a single sector to disk (convenience wrapper)
+ */
+int ide_write_sector(uint8_t drive, uint32_t lba, const void *buffer) {
+    return ide_write_sectors(drive, lba, 1, buffer);
 }
 
 /**

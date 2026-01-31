@@ -114,6 +114,7 @@ typedef struct {
 } fat_file_t;
 
 // FAT filesystem API
+int fat_init(uint8_t drive);
 int fat_mount(uint8_t drive);
 int fat_unmount(void);
 int fat_open(const char *path, fat_file_t *file);
@@ -123,6 +124,9 @@ int fat_write(fat_file_t *file, const void *buffer, uint32_t size);
 int fat_seek(fat_file_t *file, uint32_t position);
 int fat_list_dir(const char *path, fat_dir_entry_t *entries, int max_entries);
 int fat_stat(const char *path, fat_dir_entry_t *entry);
+void fat_set_partition_offset(uint32_t offset);
+fat_info_t *fat_get_info(void);
+int fat_is_mounted(void);
 
 // Internal functions
 uint32_t fat_get_next_cluster(uint32_t cluster);

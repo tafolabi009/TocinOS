@@ -279,3 +279,47 @@ const char *elf_get_machine_string(uint16_t machine) {
         default:         return "UNKNOWN";
     }
 }
+
+/**
+ * Load ELF binary from filesystem path
+ */
+int elf_load_file(const char *path, elf_context_t *context) {
+    extern void serial_printf(const char *fmt, ...);
+    extern uint32_t pmm_alloc_page(void);
+    extern int vfs_open(const char *path, int flags);
+    extern int vfs_read(int fd, void *buf, uint32_t size);
+    extern int vfs_close(int fd);
+    
+    if (!elf_initialized || !path || !context) {
+        return -1;
+    }
+    
+    // Open file
+    int fd = vfs_open(path, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    
+    // Allocate buffer for ELF file (64KB max)
+    uint8_t *buffer = (uint8_t *)pmm_alloc_page();
+    if (!buffer) {
+        vfs_close(fd);
+        return -1;
+    }
+    
+    // Allocate more pages for larger files (up to 64KB)
+    for (int i = 1; i < 16; i++) {
+        pmm_alloc_page();  // Allocate contiguous pages
+    }
+    
+    // Read file contents
+    int bytes_read = vfs_read(fd, buffer, 64 * 1024);
+    vfs_close(fd);
+    
+    if (bytes_read <= 0) {
+        return -1;
+    }
+    
+    // Load ELF from buffer
+    return elf_load(buffer, bytes_read, context);
+}

@@ -4,6 +4,20 @@
 [EXTERN kernel_main]
 [GLOBAL _start]
 
+; Multiboot header constants
+MBALIGN  equ  1 << 0            ; align modules on page boundaries
+MEMINFO  equ  1 << 1            ; provide memory map
+FLAGS    equ  MBALIGN | MEMINFO ; Multiboot flags
+MAGIC    equ  0x1BADB002        ; Multiboot magic number
+CHECKSUM equ -(MAGIC + FLAGS)   ; checksum must equal 0
+
+; Multiboot header (must be in first 8KB of kernel)
+section .multiboot
+align 4
+    dd MAGIC
+    dd FLAGS
+    dd CHECKSUM
+
 section .text
 _start:
     ; Initialize stack

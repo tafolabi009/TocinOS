@@ -6,6 +6,9 @@
 [ORG 0x7E00]
 
 stage2_start:
+    ; Save boot drive (passed from MBR in DL)
+    mov [boot_drive], dl
+    
     ; Display Stage 2 message
     mov si, stage2_msg
     call print_string
@@ -13,23 +16,167 @@ stage2_start:
     ; Enable A20 line for accessing memory above 1MB
     call enable_a20
     
-    ; Display boot menu
+    ; Show boot menu (commented out for faster testing)
     call show_boot_menu
+    ; mov si, booting_msg
+    ; call print_string
     
-    ; Load kernel from disk
-    ; Kernel starts at sector 18 (after MBR + Stage2)
-    mov ah, 0x02        ; BIOS read sectors function
-    mov al, 0x20        ; Number of sectors to read (32 sectors = 16KB)
-    mov ch, 0x00        ; Cylinder 0
-    mov cl, 0x12        ; Sector 18
-    mov dh, 0x00        ; Head 0
-    mov bx, 0x1000      ; Load kernel at 0x10000 (64KB mark)
-    mov es, bx
-    xor bx, bx
+    ; Load kernel from disk in multiple reads
+    ; Stage2 is at sectors 2-17 (16 sectors)
+    ; Kernel starts at sector 18 (1-indexed for BIOS)
+    ; Floppy: 18 sectors per track, 2 heads
+    
+    ; Read first batch: sectors 18 (rest of track 0, head 1)
+    ; Sector 18 is: track 0, head 1, sector 18
+    ; Only 1 sector left in this track
+    mov ax, 0x1000
+    mov es, ax
+    xor bx, bx              ; ES:BX = 0x10000
+    
+    mov ah, 0x02            ; Read sectors
+    mov al, 1               ; 1 sector
+    mov ch, 0               ; Cylinder 0
+    mov cl, 18              ; Sector 18
+    mov dh, 0               ; Head 0
+    mov dl, [boot_drive]    ; Boot drive
     int 0x13
-    
     jc kernel_load_error
     
+    ; Read second batch: full track 1 (head 0) = 18 sectors
+    ; Destination: 0x10000 + 512 = 0x10200 = segment 0x1020
+    mov ax, 0x1020
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 18              ; 18 sectors
+    mov ch, 0               ; Cylinder 0
+    mov cl, 1               ; Sector 1
+    mov dh, 1               ; Head 1
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; Read third batch: full track 2 (head 0) = 18 sectors
+    ; Destination: 0x10200 + 18*512 = 0x10200 + 0x2400 = segment 0x1260
+    mov ax, 0x1260
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 18
+    mov ch, 1               ; Cylinder 1
+    mov cl, 1               ; Sector 1
+    mov dh, 0               ; Head 0
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; Read fourth batch: full track 3 (head 1) = 18 sectors
+    mov ax, 0x14A0
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 18
+    mov ch, 1               ; Cylinder 1
+    mov cl, 1
+    mov dh, 1               ; Head 1
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; Read fifth batch: full track 4 (head 0) = 18 sectors
+    mov ax, 0x16E0
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 18
+    mov ch, 2               ; Cylinder 2
+    mov cl, 1
+    mov dh, 0               ; Head 0
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; Read sixth batch: full track 5 (head 1) = 18 sectors
+    mov ax, 0x1920
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 18
+    mov ch, 2               ; Cylinder 2
+    mov cl, 1
+    mov dh, 1               ; Head 1
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; Read seventh batch: full track 6 (head 0) = 18 sectors  
+    mov ax, 0x1B60
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 18
+    mov ch, 3               ; Cylinder 3
+    mov cl, 1
+    mov dh, 0               ; Head 0
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; Read eighth batch: full track 7 (head 1) = 18 sectors
+    mov ax, 0x1DA0
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 18
+    mov ch, 3               ; Cylinder 3
+    mov cl, 1
+    mov dh, 1               ; Head 1
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; Read ninth batch part A: 1 sector before 64K boundary
+    ; DMA cannot cross 64KB boundary, so split at 0x20000
+    ; From 0x1FE00 to 0x20000 is 512 bytes = 1 sector
+    mov ax, 0x1FE0
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 1               ; Only 1 sector before 64K boundary
+    mov ch, 4               ; Cylinder 4
+    mov cl, 1               ; Sector 1
+    mov dh, 0               ; Head 0
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; Read ninth batch part B: 17 sectors after 64K boundary
+    mov ax, 0x2000
+    mov es, ax
+    xor bx, bx
+    
+    mov ah, 0x02
+    mov al, 17              ; 17 remaining sectors
+    mov ch, 4               ; Cylinder 4
+    mov cl, 2               ; Sector 2 (continuing from above)
+    mov dh, 0               ; Head 0
+    mov dl, [boot_drive]    ; Boot drive
+    int 0x13
+    jc kernel_load_error
+    
+    ; That's 1 + 18*7 + 1 + 17 = 145 sectors = ~74KB, enough for our kernel
+    ; Total: 145 * 512 = 74240 bytes
+    
+    ; Kernel loaded successfully
+
     ; Check if we should boot into 64-bit mode
     call check_long_mode
     jc boot_32bit       ; If no 64-bit support, use 32-bit
@@ -224,6 +371,9 @@ stage2_msg db 'Stage 2 Bootloader loaded', 0x0D, 0x0A, 0
 entering_32bit_msg db 'Entering 32-bit mode...', 0x0D, 0x0A, 0
 entering_64bit_msg db 'Entering 64-bit mode...', 0x0D, 0x0A, 0
 kernel_err_msg db 'Kernel load error!', 0x0D, 0x0A, 0
+
+; Boot drive (set at stage2 entry)
+boot_drive db 0
 
 ; Boot menu messages
 logo_line1 db '  _____         _       ___  ____  ', 0x0D, 0x0A, 0
