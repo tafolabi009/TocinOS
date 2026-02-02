@@ -73,11 +73,12 @@ int sys_waitpid(uint32_t pid, uint32_t status, uint32_t options);
 int sys_sleep(uint32_t ticks);
 int sys_gettime(void);
 
-// Memory system calls
-int sys_brk(uint32_t addr);
-int sys_sbrk(uint32_t increment);
-int sys_mmap(uint32_t addr, uint32_t length, uint32_t prot, uint32_t flags, uint32_t fd);
-int sys_munmap(uint32_t addr, uint32_t length);
+// Memory system calls - these use wrapper functions that cast to proper types
+// The actual implementations are in memory.h with proper signatures
+uint32_t sys_brk_wrapper(uint32_t addr);
+uint32_t sys_mmap_wrapper(uint32_t addr, uint32_t length, uint32_t prot, 
+                          uint32_t flags, uint32_t fd, uint32_t offset);
+int sys_munmap_wrapper(uint32_t addr, uint32_t length);
 
 // File system calls
 int sys_lseek(uint32_t fd, uint32_t offset, uint32_t whence);

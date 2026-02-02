@@ -225,45 +225,252 @@ typedef struct {
     uint32_t error_code;     // Error code from CPU
     uint32_t eip;            // Instruction pointer
     uint32_t cr2;            // CR2 register value
+    uint32_t esp;            // Stack pointer
+    uint32_t cs;             // Code segment
 } page_fault_info_t;
 
-// Page fault error code flags
-#define PF_PRESENT  0x01     // Page not present
-#define PF_WRITE    0x02     // Write fault
-#define PF_USER     0x04     // User mode fault
+// Page fault error code flags (x86)
+#define PF_PRESENT  0x01     // Page was present (protection violation vs not-present)
+#define PF_WRITE    0x02     // Write fault (vs read fault)
+#define PF_USER     0x04     // User mode fault (vs kernel mode)
 #define PF_RESERVED 0x08     // Reserved bit violation
-#define PF_FETCH    0x10     // Instruction fetch
+#define PF_FETCH    0x10     // Instruction fetch fault (NX violation)
 
+// Page fault handler registration
 void page_fault_handler(page_fault_info_t *info);
 void page_fault_register_handler(void (*handler)(page_fault_info_t *));
 
+// ==================== VIRTUAL MEMORY AREAS (VMA) ====================
+
+/** @defgroup VMAFlags VMA Protection and Type Flags
+ * @{
+ */
+#define VM_READ         0x001   /**< VMA is readable */
+#define VM_WRITE        0x002   /**< VMA is writable */
+#define VM_EXEC         0x004   /**< VMA is executable */
+#define VM_SHARED       0x008   /**< Changes are shared */
+#define VM_PRIVATE      0x010   /**< Private (copy-on-write) */
+#define VM_ANONYMOUS    0x020   /**< No file backing */
+#define VM_FILE         0x040   /**< File-backed mapping */
+#define VM_LAZY         0x080   /**< Demand paging enabled */
+#define VM_LOCKED       0x100   /**< Pages locked in memory */
+#define VM_GROWSDOWN    0x200   /**< Stack-like growth direction */
+#define VM_DONTCOPY     0x400   /**< Don't copy on fork */
+#define VM_STACK        0x800   /**< This is a stack VMA */
+/** @} */
+
+/**
+ * @brief Virtual Memory Area descriptor
+ * 
+ * Represents a contiguous region of virtual memory with consistent
+ * permissions and backing. VMAs are organized in a linked list per process.
+ */
+typedef struct vma {
+    uint32_t vm_start;          /**< Start virtual address (page aligned) */
+    uint32_t vm_end;            /**< End virtual address (exclusive, page aligned) */
+    uint32_t vm_flags;          /**< VMA flags (VM_READ, VM_WRITE, etc.) */
+    
+    /* File backing (if VM_FILE is set) */
+    uint32_t vm_file_inode;     /**< Inode number of backing file */
+    uint32_t vm_file_offset;    /**< Offset in file */
+    int      vm_fd;             /**< File descriptor */
+    
+    /* Swap information (if pages are swapped out) */
+    uint32_t swap_count;        /**< Number of swapped pages in this VMA */
+    
+    /* Reference counting */
+    uint32_t ref_count;         /**< Reference count for shared mappings */
+    
+    /* Linked list */
+    struct vma *vm_next;        /**< Next VMA in list */
+    struct vma *vm_prev;        /**< Previous VMA in list */
+} vma_t;
+
+/**
+ * @brief Memory descriptor for a process
+ * 
+ * Contains all virtual memory information for a single process.
+ */
+typedef struct mm_struct {
+    vma_t    *vmas;             /**< Head of VMA linked list */
+    uint32_t  vma_count;        /**< Number of VMAs */
+    
+    uint32_t  page_directory;   /**< Physical address of page directory */
+    
+    /* Memory regions */
+    uint32_t  code_start;       /**< Start of code segment */
+    uint32_t  code_end;         /**< End of code segment */
+    uint32_t  data_start;       /**< Start of data segment */
+    uint32_t  data_end;         /**< End of data/BSS */
+    uint32_t  heap_start;       /**< Start of heap (brk) */
+    uint32_t  heap_end;         /**< Current heap end (brk) */
+    uint32_t  stack_start;      /**< Stack start (bottom) */
+    uint32_t  stack_end;        /**< Stack end (top) */
+    
+    /* mmap region */
+    uint32_t  mmap_base;        /**< Base address for mmap allocations */
+    
+    /* Statistics */
+    uint32_t  total_vm;         /**< Total virtual memory */
+    uint32_t  rss;              /**< Resident set size (pages in RAM) */
+    uint32_t  shared;           /**< Shared pages */
+    uint32_t  locked;           /**< Locked pages */
+    
+    /* Reference count */
+    uint32_t  ref_count;        /**< Reference count for mm_struct */
+} mm_struct_t;
+
+// VMA management functions
+vma_t* vma_create(uint32_t start, uint32_t end, uint32_t flags);
+void   vma_destroy(vma_t *vma);
+vma_t* vma_find(mm_struct_t *mm, uint32_t addr);
+int    vma_insert(mm_struct_t *mm, vma_t *vma);
+int    vma_remove(mm_struct_t *mm, vma_t *vma);
+int    vma_merge(mm_struct_t *mm, vma_t *vma);
+
+// MM struct management
+mm_struct_t* mm_create(void);
+void         mm_destroy(mm_struct_t *mm);
+mm_struct_t* mm_clone(mm_struct_t *src);
+void         mm_release(mm_struct_t *mm);
+
 // ==================== MEMORY-MAPPED FILES ====================
 
-#define MAX_MMAPS 128
+#define MAX_MMAPS 256
 
-typedef struct {
-    uint32_t virt_addr;      // Virtual address
-    uint32_t size;           // Size in bytes
-    uint32_t offset;         // File offset
-    uint32_t flags;          // Mapping flags
-    int fd;                  // File descriptor
-    int task_id;             // Owner task
-} mmap_region_t;
+// Memory mapping flags (POSIX compatible)
+#define PROT_NONE       0x0
+#define PROT_READ       0x1
+#define PROT_WRITE      0x2
+#define PROT_EXEC       0x4
 
-// Memory mapping flags
-#define MMAP_PROT_READ   0x1
-#define MMAP_PROT_WRITE  0x2
-#define MMAP_PROT_EXEC   0x4
-#define MMAP_SHARED      0x10
-#define MMAP_PRIVATE     0x20
-#define MMAP_FIXED       0x40
-#define MMAP_ANONYMOUS   0x80
+#define MAP_SHARED      0x01
+#define MAP_PRIVATE     0x02
+#define MAP_FIXED       0x10
+#define MAP_ANONYMOUS   0x20
+#define MAP_NORESERVE   0x40
+#define MAP_GROWSDOWN   0x100
+#define MAP_LOCKED      0x200
+#define MAP_STACK       0x400
+
+#define MAP_FAILED      ((void *)-1)
 
 // Memory mapping functions
-void* mmap(void *addr, uint32_t length, int prot, int flags, int fd, uint32_t offset);
-int munmap(void *addr, uint32_t length);
-int mprotect(void *addr, uint32_t length, int prot);
-int msync(void *addr, uint32_t length, int flags);
+void* sys_mmap(void *addr, uint32_t length, int prot, int flags, int fd, uint32_t offset);
+int   sys_munmap(void *addr, uint32_t length);
+int   sys_mprotect(void *addr, uint32_t length, int prot);
+int   sys_msync(void *addr, uint32_t length, int flags);
+void* sys_brk(void *addr);
+
+// Legacy function names (wrapper macros)
+#define mmap(addr, len, prot, flags, fd, off)  sys_mmap(addr, len, prot, flags, fd, off)
+#define munmap(addr, len)                       sys_munmap(addr, len)
+#define mprotect(addr, len, prot)               sys_mprotect(addr, len, prot)
+#define msync(addr, len, flags)                 sys_msync(addr, len, flags)
+
+// ==================== VMM PAGE CACHE ====================
+// This is a separate page cache for demand paging, distinct from fs_cache.h
+
+#define VMM_PAGE_CACHE_HASH_BITS    8
+#define VMM_PAGE_CACHE_HASH_SIZE    (1 << VMM_PAGE_CACHE_HASH_BITS)
+
+/**
+ * @brief VMM page cache entry (for demand paging)
+ * 
+ * Caches a single page of file data for memory-mapped files.
+ */
+typedef struct vmm_page_cache_entry {
+    uint32_t inode;             /**< Inode number */
+    uint32_t offset;            /**< Page offset in file (in pages) */
+    uint32_t phys_addr;         /**< Physical address of cached page */
+    uint32_t flags;             /**< Cache entry flags */
+    uint32_t ref_count;         /**< Number of references */
+    uint32_t access_time;       /**< Last access timestamp */
+    uint32_t dirty : 1;         /**< Page has been modified */
+    uint32_t locked : 1;        /**< Page is locked */
+    uint32_t uptodate : 1;      /**< Page contains valid data */
+    struct vmm_page_cache_entry *hash_next;  /**< Hash chain */
+    struct vmm_page_cache_entry *lru_next;   /**< LRU list next */
+    struct vmm_page_cache_entry *lru_prev;   /**< LRU list prev */
+} vmm_page_cache_entry_t;
+
+/**
+ * @brief VMM page cache statistics
+ */
+typedef struct {
+    uint32_t hits;              /**< Cache hits */
+    uint32_t misses;            /**< Cache misses */
+    uint32_t evictions;         /**< Pages evicted */
+    uint32_t writebacks;        /**< Dirty pages written back */
+    uint32_t total_pages;       /**< Total cached pages */
+} vmm_page_cache_stats_t;
+
+// VMM page cache functions
+void vmm_page_cache_init(void);
+vmm_page_cache_entry_t* vmm_page_cache_lookup(uint32_t inode, uint32_t offset);
+vmm_page_cache_entry_t* vmm_page_cache_insert(uint32_t inode, uint32_t offset, uint32_t phys_addr);
+void vmm_page_cache_remove(vmm_page_cache_entry_t *entry);
+void vmm_page_cache_mark_dirty(vmm_page_cache_entry_t *entry);
+void vmm_page_cache_sync(uint32_t inode);
+void vmm_page_cache_sync_all(void);
+void vmm_page_cache_evict(uint32_t num_pages);
+void vmm_page_cache_get_stats(vmm_page_cache_stats_t *stats);
+uint32_t vmm_page_cache_shrink(uint32_t target_free);
+
+// ==================== SWAP MANAGEMENT ====================
+
+#define SWAP_MAX_PAGES      (16 * 1024)   /**< Max 64MB swap (16K * 4KB) */
+#define SWAP_SIGNATURE      0x53574150    /**< 'SWAP' */
+
+/**
+ * @brief Swap page table entry format
+ * When a PTE has PRESENT=0 and SWAPPED flag set:
+ *   Bits 31-12: Swap slot number
+ *   Bits 11-1:  Reserved
+ *   Bit 0:      Present (0)
+ */
+#define PTE_SWAPPED         0x200         /**< Page is in swap (custom flag) */
+#define PTE_SWAP_SLOT_SHIFT 12
+
+/**
+ * @brief Swap area descriptor
+ */
+typedef struct {
+    uint32_t start_block;       /**< Start block on disk */
+    uint32_t total_pages;       /**< Total swap pages available */
+    uint32_t free_pages;        /**< Free swap pages */
+    uint32_t *bitmap;           /**< Allocation bitmap */
+    int      device;            /**< Block device number */
+    uint32_t flags;             /**< Swap area flags */
+} swap_area_t;
+
+// Swap management functions
+void     swap_init(void);
+int      swap_out_page(uint32_t virt_addr, uint32_t *pte);
+int      swap_in_page(uint32_t virt_addr, uint32_t pte);
+uint32_t swap_alloc_slot(void);
+void     swap_free_slot(uint32_t slot);
+int      swap_add_area(int device, uint32_t start, uint32_t size);
+void     swap_get_stats(uint32_t *total, uint32_t *free);
+
+// ==================== DEMAND PAGING ====================
+
+/**
+ * @brief Page fault result codes
+ */
+typedef enum {
+    PF_HANDLED = 0,             /**< Fault handled successfully */
+    PF_SIGBUS,                  /**< Bad memory access (SIGBUS) */
+    PF_SIGSEGV,                 /**< Segmentation violation (SIGSEGV) */
+    PF_OOM,                     /**< Out of memory */
+    PF_SWAP_ERROR,              /**< Swap I/O error */
+} pf_result_t;
+
+// Enhanced page fault handling
+pf_result_t handle_page_fault(uint32_t fault_addr, uint32_t error_code);
+int demand_page_file(vma_t *vma, uint32_t fault_addr);
+int demand_page_anon(vma_t *vma, uint32_t fault_addr);
+int handle_cow_fault(uint32_t fault_addr, uint32_t pte);
 
 // ==================== MEMORY STATISTICS ====================
 

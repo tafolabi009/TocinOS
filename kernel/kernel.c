@@ -19,12 +19,17 @@
 #include "../include/kernel/usermode.h"
 #include "../include/kernel/process.h"
 #include "../include/kernel/fat.h"
+#include "../include/kernel/ext2.h"
 #include "../include/kernel/vfs.h"
 #include "../include/kernel/elf.h"
+#include "../include/kernel/procfs.h"
+#include "../include/kernel/devfs.h"
+#include "../include/kernel/tmpfs.h"
 #include "../include/drivers/mdf.h"
 #include "../include/drivers/vesa.h"
 #include "../include/drivers/ide.h"
 #include "../include/drivers/net.h"
+#include "../include/drivers/usb_core.h"
 
 // VGA text mode buffer
 #define VGA_MEMORY 0xB8000
@@ -252,6 +257,48 @@ void kernel_main(void) {
     kernel_print("    VFS initialized\n");
     serial_printf("[INIT] VFS initialized\n");
     
+    // Initialize ext4 VFS support
+    kernel_print("[*] Initializing ext4 filesystem support...\n");
+    ext4_vfs_init();
+    kernel_print("    ext4 support registered\n");
+    serial_printf("[INIT] ext4 VFS support initialized\n");
+    
+    // Initialize virtual filesystems
+    kernel_print("[*] Initializing procfs (/proc)...\n");
+    if (procfs_init() == 0) {
+        kernel_print("    procfs initialized\n");
+        serial_printf("[INIT] procfs initialized\n");
+    }
+    
+    kernel_print("[*] Initializing devfs (/dev)...\n");
+    if (devfs_init() == 0) {
+        kernel_print("    devfs initialized\n");
+        serial_printf("[INIT] devfs initialized\n");
+    }
+    
+    kernel_print("[*] Initializing tmpfs...\n");
+    if (tmpfs_init() == 0) {
+        kernel_print("    tmpfs initialized\n");
+        serial_printf("[INIT] tmpfs initialized\n");
+    }
+    
+    // Initialize USB subsystem
+    kernel_print("[*] Initializing USB subsystem...\n");
+    if (usb_init() == 0) {
+        kernel_print("    USB core initialized\n");
+        serial_printf("[INIT] USB subsystem initialized\n");
+        
+        // USB HID and Mass Storage drivers will be registered
+        extern int usb_hid_init(void);
+        extern int usb_msc_init(void);
+        usb_hid_init();
+        usb_msc_init();
+        
+        // Enumerate USB devices
+        usb_enumerate();
+        kernel_print("    USB devices enumerated\n");
+    }
+    
     // Initialize ELF loader
     kernel_print("[*] Initializing ELF Loader...\n");
     elf_init();
@@ -265,7 +312,7 @@ void kernel_main(void) {
     extern int sys_spawn(uint32_t path, uint32_t argv, uint32_t envp);
     
     // Quick test of echo, hello, ls
-    const char *test_programs[] = {"/ECHO.ELF", "/HELLO.ELF", "/LS.ELF", (const char*)0};
+    const char *test_programs[] = {"/ECHO.ELF", "/HELLO.ELF", "/LS.ELF", "/DYNHELLO.ELF", (const char*)0};
     
     for (int i = 0; test_programs[i] != (const char*)0; i++) {
         serial_printf("\n--- Running %s ---\n", test_programs[i]);

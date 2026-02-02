@@ -238,6 +238,7 @@ int elf_execute(elf_context_t *context) {
     
     extern void vmm_map_page(unsigned int vaddr, unsigned int paddr, unsigned int flags);
     extern void tss_set_kernel_stack(uint32_t stack);
+    extern void usermode_switch_to_user_with_stack(void *entry, uint32_t user_esp);
     #define PAGE_WRITE 0x02
     #define PAGE_USER  0x04
     
@@ -250,18 +251,16 @@ int elf_execute(elf_context_t *context) {
     for (int j = 0; j < 4096; j++) ks[j] = 0;
     
     // Set TSS kernel stack (top of page since stack grows down)
-    uint32_t kernel_stack_top = kernel_stack_paddr + 4096 - 16;  // Leave some room
+    uint32_t kernel_stack_top = kernel_stack_paddr + 4096 - 16;
     tss_set_kernel_stack(kernel_stack_top);
     
-    // Map user stack pages (stack at 0xBFFFEFF0, grows down)
-    // Map a few pages below 0xC0000000 for stack
-    uint32_t stack_top = 0xBFFFF000;  // Top of stack page
-    for (int i = 0; i < 4; i++) {  // 4 pages = 16KB stack
+    // Map user stack pages
+    uint32_t stack_top = 0xBFFFF000;
+    for (int i = 0; i < 4; i++) {
         uint32_t stack_vaddr = stack_top - ((i + 1) * 4096);
         uint32_t stack_paddr = (uint32_t)pmm_alloc_page();
         if (!stack_paddr) return -1;
         
-        // Zero the stack page
         uint8_t *p = (uint8_t *)stack_paddr;
         for (int j = 0; j < 4096; j++) p[j] = 0;
         
@@ -269,16 +268,125 @@ int elf_execute(elf_context_t *context) {
         __asm__ volatile("invlpg (%0)" : : "r"(stack_vaddr) : "memory");
     }
     
+    // Determine actual entry point (may be interpreter)
+    uint32_t actual_entry = context->entry_point;
+    uint32_t interp_base = 0;
+    
+    // Check if we need to load an interpreter (dynamic linker)
+    if (context->dyn.interp_path[0] != '\0') {
+        serial_printf("[ELF] Found interpreter: %s\n", context->dyn.interp_path);
+        
+        // Load the interpreter (ld.so)
+        typedef struct { uint32_t cluster; uint32_t size; uint32_t position; uint32_t current_cluster; } fat_file_t;
+        extern fat_file_t *fat_open(const char *path);
+        extern int fat_read(fat_file_t *file, void *buffer, uint32_t size);
+        extern void fat_close(fat_file_t *file);
+        
+        fat_file_t *interp_file = fat_open(context->dyn.interp_path);
+        if (interp_file) {
+            uint32_t interp_size = interp_file->size;
+            if (interp_size > 0 && interp_size < 64*1024) {
+                static uint8_t interp_buf[64*1024];
+                int bytes_read = fat_read(interp_file, interp_buf, interp_size);
+                fat_close(interp_file);
+                
+                if (bytes_read > 0 && elf_validate(interp_buf, bytes_read)) {
+                    elf32_ehdr_t *interp_hdr = (elf32_ehdr_t *)interp_buf;
+                    elf32_phdr_t *interp_phdr = (elf32_phdr_t *)(interp_buf + interp_hdr->e_phoff);
+                    
+                    // For ET_EXEC interpreters, load at their specified addresses
+                    // For ET_DYN interpreters, use a fixed base
+                    uint32_t interp_load_base = 0;
+                    if (interp_hdr->e_type == ET_DYN) {
+                        interp_load_base = 0x40000000;
+                    }
+                    interp_base = interp_load_base;
+                    
+                    // Map interpreter segments
+                    for (int i = 0; i < interp_hdr->e_phnum; i++) {
+                        if (interp_phdr[i].p_type == PT_LOAD) {
+                            uint32_t vaddr = interp_load_base + interp_phdr[i].p_vaddr;
+                            uint32_t memsz = interp_phdr[i].p_memsz;
+                            uint32_t filesz = interp_phdr[i].p_filesz;
+                            
+                            for (uint32_t off = 0; off < memsz; off += 4096) {
+                                uint32_t page_vaddr = (vaddr + off) & ~0xFFF;
+                                uint32_t paddr = (uint32_t)pmm_alloc_page();
+                                if (paddr) {
+                                    uint8_t *p = (uint8_t *)paddr;
+                                    for (int j = 0; j < 4096; j++) p[j] = 0;
+                                    vmm_map_page(page_vaddr, paddr, PAGE_WRITE | PAGE_USER);
+                                    __asm__ volatile("invlpg (%0)" : : "r"(page_vaddr) : "memory");
+                                }
+                            }
+                            
+                            // Copy segment contents
+                            uint8_t *src = interp_buf + interp_phdr[i].p_offset;
+                            uint8_t *dst = (uint8_t *)vaddr;
+                            for (uint32_t j = 0; j < filesz; j++) {
+                                dst[j] = src[j];
+                            }
+                        }
+                    }
+                    
+                    // Use interpreter's entry point
+                    actual_entry = interp_load_base + interp_hdr->e_entry;
+                }
+            }
+        }
+    }
+    
+    // Set up user stack with argc, argv, envp, auxv
+    // First copy program headers to user-accessible stack
+    elf32_ehdr_t *ehdr = (elf32_ehdr_t *)context->elf_data;
+    uint32_t phdr_size = ehdr->e_phnum * ehdr->e_phentsize;
+    uint32_t phdr_stack_addr = stack_top - phdr_size - 16;
+    phdr_stack_addr &= ~0xF;
+    
+    uint8_t *phdr_src = (uint8_t *)context->elf_data + ehdr->e_phoff;
+    uint8_t *phdr_dst = (uint8_t *)phdr_stack_addr;
+    for (uint32_t i = 0; i < phdr_size; i++) {
+        phdr_dst[i] = phdr_src[i];
+    }
+    
+    // Build stack: argc, argv[], NULL, envp[], NULL, auxv[]
+    uint32_t stack_base = phdr_stack_addr - 256;
+    uint32_t *stack = (uint32_t *)stack_base;
+    int idx = 0;
+    
+    stack[idx++] = 1;  // argc
+    stack[idx++] = 0;  // argv[0] = NULL
+    stack[idx++] = 0;  // NULL terminator
+    stack[idx++] = 0;  // envp NULL terminator
+    
+    // Auxiliary vector
+    stack[idx++] = AT_PHDR;
+    stack[idx++] = phdr_stack_addr;
+    stack[idx++] = AT_PHENT;
+    stack[idx++] = context->phent;
+    stack[idx++] = AT_PHNUM;
+    stack[idx++] = context->phnum;
+    stack[idx++] = AT_PAGESZ;
+    stack[idx++] = 4096;
+    stack[idx++] = AT_BASE;
+    stack[idx++] = interp_base;
+    stack[idx++] = AT_ENTRY;
+    stack[idx++] = context->entry_point;
+    stack[idx++] = AT_NULL;
+    stack[idx++] = 0;
+    
+    uint32_t user_esp = stack_base;
+    
     // Create user mode process
     uint32_t pid;
-    void (*entry_point)(void) = (void (*)(void))context->entry_point;
+    void (*entry_fn)(void) = (void (*)(void))actual_entry;
     
-    if (usermode_create_process(entry_point, &pid) != 0) {
+    if (usermode_create_process(entry_fn, &pid) != 0) {
         return -1;
     }
     
-    // Switch to user mode
-    usermode_switch_to_user(entry_point);
+    // Switch to user mode with prepared stack
+    usermode_switch_to_user_with_stack(entry_fn, user_esp);
     
     return 0;
 }

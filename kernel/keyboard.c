@@ -113,3 +113,14 @@ char keyboard_getchar(void) {
 int keyboard_has_data(void) {
     return buffer_read_pos != buffer_write_pos;
 }
+
+/**
+ * Add character to keyboard buffer (for USB HID keyboard support)
+ */
+void keyboard_buffer_add(char c) {
+    uint32_t next_pos = (buffer_write_pos + 1) % KEYBOARD_BUFFER_SIZE;
+    if (next_pos != buffer_read_pos) {
+        keyboard_buffer[buffer_write_pos] = c;
+        buffer_write_pos = next_pos;
+    }
+}

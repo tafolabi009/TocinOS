@@ -200,19 +200,36 @@ typedef struct {
     void *device;                   // Block device
 } ext2_fs_t;
 
-// ext2 API
+// ==================== ext2/ext4 API ====================
+
+// Initialization and mounting
 int ext2_init(void);
 int ext2_mount(const char *device, ext2_fs_t **fs);
 int ext2_unmount(ext2_fs_t *fs);
+int ext2_sync(ext2_fs_t *fs);
+
+// Inode operations
+int ext2_read_inode(ext2_fs_t *fs, uint32_t inode_num, ext2_inode_t *inode);
+int ext2_write_inode(ext2_fs_t *fs, uint32_t inode_num, ext2_inode_t *inode);
+uint32_t ext2_alloc_inode(ext2_fs_t *fs, int is_directory);
+int ext2_free_inode(ext2_fs_t *fs, uint32_t inode_num, int is_directory);
 
 // File operations
-int ext2_read_inode(ext2_fs_t *fs, uint32_t inode_num, ext2_inode_t *inode);
 int ext2_read_file(ext2_fs_t *fs, ext2_inode_t *inode, uint32_t offset, uint32_t size, void *buffer);
 int ext2_write_file(ext2_fs_t *fs, ext2_inode_t *inode, uint32_t offset, uint32_t size, const void *buffer);
 
 // Directory operations
 int ext2_read_dir(ext2_fs_t *fs, ext2_inode_t *inode, uint32_t index, ext2_dir_entry_t *entry);
 int ext2_find_entry(ext2_fs_t *fs, ext2_inode_t *inode, const char *name, ext2_dir_entry_t *entry);
+int ext2_add_dir_entry(ext2_fs_t *fs, ext2_inode_t *dir_inode, uint32_t dir_inode_num,
+                       const char *name, uint32_t new_inode, uint8_t file_type);
+
+// File/directory creation and deletion
+int ext2_create(ext2_fs_t *fs, uint32_t parent_inode_num, const char *name,
+                uint16_t mode, uint32_t *new_inode_num);
+
+// Path resolution
+int ext2_resolve_path(ext2_fs_t *fs, const char *path, ext2_inode_t *inode, uint32_t *inode_num);
 
 // Block operations
 int ext2_read_block(ext2_fs_t *fs, uint32_t block_num, void *buffer);
@@ -221,5 +238,39 @@ int ext2_write_block(ext2_fs_t *fs, uint32_t block_num, const void *buffer);
 // Utility functions
 uint32_t ext2_get_block_size(ext2_superblock_t *sb);
 uint32_t ext2_get_inode_block(ext2_fs_t *fs, ext2_inode_t *inode, uint32_t block_index);
+uint32_t ext2_get_block_enhanced(ext2_fs_t *fs, ext2_inode_t *inode, uint32_t block_index);
+
+// Statistics and debug
+void ext2_print_stats(ext2_fs_t *fs);
+
+// ==================== JBD2 Journaling API ====================
+
+/* Forward declaration for journal handle */
+struct jbd2_handle;
+typedef struct jbd2_handle jbd2_handle_t;
+
+/* Journal operations */
+int jbd2_init(ext2_fs_t *fs);
+int jbd2_recover(ext2_fs_t *fs);
+jbd2_handle_t *jbd2_start(ext2_fs_t *fs, int num_blocks);
+int jbd2_get_write_access(jbd2_handle_t *handle, uint32_t block_num);
+int jbd2_commit(jbd2_handle_t *handle);
+void jbd2_abort(jbd2_handle_t *handle);
+
+/* Journaled block write */
+int ext2_write_block_journaled(ext2_fs_t *fs, uint32_t block_num, const void *buffer);
+
+// ==================== EXT4 VFS Integration ====================
+
+/* Initialize ext4 VFS integration and register with VFS layer */
+int ext4_vfs_init(void);
+
+/* Direct ext4 file operations (for use without VFS) */
+int ext4_open_file(const char *mountpoint, const char *path, uint32_t mode);
+int ext4_read_fd(int fd_idx, void *buffer, uint32_t size);
+int ext4_write_fd(int fd_idx, const void *buffer, uint32_t size);
+int ext4_seek_fd(int fd_idx, int32_t offset, int whence);
+int ext4_close_fd(int fd_idx);
+int ext4_list_dir(const char *mountpoint, const char *path);
 
 #endif // EXT2_H

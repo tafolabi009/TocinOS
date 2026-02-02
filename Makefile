@@ -55,12 +55,18 @@ KERNEL_C_SOURCES = $(wildcard $(KERNEL_DIR)/*.c) \
                    $(wildcard $(KERNEL_DIR)/mm/*.c) \
                    $(wildcard $(KERNEL_DIR)/task/*.c) \
                    $(wildcard $(KERNEL_DIR)/fs/*.c) \
-                   $(wildcard $(KERNEL_DIR)/drivers/*.c)
+                   $(wildcard $(KERNEL_DIR)/net/*.c) \
+                   $(wildcard $(KERNEL_DIR)/drivers/*.c) \
+                   $(wildcard $(KERNEL_DIR)/drivers/net/*.c)
+
+# USB sources (handled separately due to subdirectory)
+USB_SOURCES = $(wildcard $(KERNEL_DIR)/drivers/usb/*.c)
+USB_OBJS = $(patsubst $(KERNEL_DIR)/drivers/usb/%.c,$(BUILD_DIR)/%.o,$(USB_SOURCES))
 
 # Object files
 KERNEL_ENTRY_OBJ = $(BUILD_DIR)/entry.o
 KERNEL_ISR_ASM_OBJ = $(BUILD_DIR)/isr_asm.o
-KERNEL_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(KERNEL_C_SOURCES)))
+KERNEL_C_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(KERNEL_C_SOURCES))) $(USB_OBJS) 
 
 # Output files
 MBR_BIN = $(BUILD_DIR)/mbr.bin
@@ -131,6 +137,10 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/%.c
 	$(msg) "CC" "$<"
 	$(Q)$(CC) $(CFLAGS) -c $< -o $@
 
+
+$(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/usb/%.c
+	$(msg) "CC" "$<"
+	$(Q)$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/%.o: $(KERNEL_DIR)/fs/%.c
 	$(msg) "CC" "$<"
 	$(Q)$(CC) $(CFLAGS) -c $< -o $@

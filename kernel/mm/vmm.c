@@ -128,3 +128,15 @@ unsigned int vmm_get_physical(unsigned int virtual_addr) {
 uint32_t vmm_virt_to_phys(uint32_t virt_addr) {
     return vmm_get_physical(virt_addr);
 }
+
+/* Stub functions for incomplete features */
+int vmm_mark_cow(unsigned int vaddr) {
+    (void)vaddr;
+    return 0; // TODO: Mark page as copy-on-write
+}
+
+int vmm_set_page_flags(unsigned int vaddr, unsigned int flags) {
+    (void)vaddr;
+    (void)flags;
+    return 0; // TODO: Set page flags
+}

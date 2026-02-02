@@ -106,6 +106,17 @@ char serial_getchar(uint16_t port) {
 }
 
 /**
+ * Read multiple bytes from serial port (non-blocking)
+ */
+int serial_read(uint16_t port, char *data, int len) {
+    int count = 0;
+    while (count < len && serial_received(port)) {
+        data[count++] = inb(port);
+    }
+    return count;
+}
+
+/**
  * Print a number in hex
  */
 static void serial_print_hex(uint16_t port, uint32_t num) {

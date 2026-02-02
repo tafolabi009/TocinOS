@@ -398,15 +398,15 @@ void *_dl_runtime_resolve(lib_info_t *lib, uint32_t reloc_idx) {
 // Main entry point for dynamic linker
 // Called by kernel with special stack setup:
 // [argc] [argv...] [NULL] [envp...] [NULL] [auxv...]
-void _dl_start(void) {
-    ld_puts("[ld.so] TocinOS Dynamic Linker starting\n");
+void _dl_start(uint32_t *initial_sp) {
+    ld_puts("[ld.so] Dynamic Linker starting\n");
     
-    // Get stack pointer
-    uint32_t *sp;
-    __asm__ volatile("mov %%esp, %0" : "=r"(sp));
+    // Use the stack pointer passed from _start
+    uint32_t *sp = initial_sp;
     
     // Parse auxiliary vector to find main program info
     int argc = (int)*sp++;
+    
     char **argv = (char **)sp;
     sp += argc + 1;  // Skip argv and NULL
     char **envp = (char **)sp;
@@ -440,10 +440,6 @@ void _dl_start(void) {
         auxv++;
     }
     
-    ld_puts("[ld.so] Program entry: ");
-    ld_puthex(entry);
-    ld_putchar('\n');
-    
     // Find main program's DYNAMIC segment
     main_exe.base = 0;  // Main exe has fixed base
     
@@ -456,17 +452,15 @@ void _dl_start(void) {
     }
     
     // Process relocations
-    ld_puts("[ld.so] Processing relocations...\n");
     process_relocations(&main_exe);
     
     // Call init functions
     if (main_exe.init) {
-        ld_puts("[ld.so] Calling init\n");
         main_exe.init();
     }
     
     // Transfer control to main program
-    ld_puts("[ld.so] Transferring control to main program\n");
+    ld_puts("[ld.so] Starting program\n");
     
     void (*entry_fn)(void) = (void (*)(void))entry;
     entry_fn();
@@ -481,9 +475,11 @@ __attribute__((naked))
 void _start(void) {
     __asm__ volatile(
         "xor %%ebp, %%ebp\n"     // Clear frame pointer
-        "call _dl_start\n"        // Call linker main
+        "mov %%esp, %%eax\n"     // Save initial ESP
+        "push %%eax\n"           // Pass as argument to _dl_start
+        "call _dl_start\n"       // Call linker main with sp as argument
         "1: hlt\n"
         "jmp 1b\n"
-        ::: "memory"
+        ::: "memory", "eax"
     );
 }

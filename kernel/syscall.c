@@ -18,6 +18,11 @@
 // External assembly interrupt handler for syscalls
 extern void isr128(void);
 
+/* Forward declarations for legacy memory syscall implementations */
+static int syscall_brk_legacy(uint32_t addr);
+static int syscall_mmap_legacy(uint32_t addr, uint32_t length, uint32_t prot, uint32_t flags, uint32_t fd);
+static int syscall_munmap_legacy(uint32_t addr, uint32_t length);
+
 // System call table
 static syscall_handler_t syscall_table[SYSCALL_MAX];
 
@@ -68,7 +73,7 @@ void syscall_init(void) {
     syscall_register(SYS_WAIT, (syscall_handler_t)sys_wait);
     syscall_register(SYS_SLEEP, (syscall_handler_t)sys_sleep);
     syscall_register(SYS_GETTIME, (syscall_handler_t)sys_gettime);
-    syscall_register(SYS_BRK, (syscall_handler_t)sys_brk);
+    syscall_register(SYS_BRK, (syscall_handler_t)syscall_brk_legacy);
     syscall_register(SYS_LSEEK, (syscall_handler_t)sys_lseek);
     syscall_register(SYS_GETCWD, (syscall_handler_t)sys_getcwd);
     syscall_register(SYS_CHDIR, (syscall_handler_t)sys_chdir);
@@ -77,8 +82,8 @@ void syscall_init(void) {
     syscall_register(SYS_CLOSEDIR, (syscall_handler_t)sys_closedir);
     syscall_register(SYS_WAITPID, (syscall_handler_t)sys_waitpid);
     syscall_register(SYS_SPAWN, (syscall_handler_t)sys_spawn);
-    syscall_register(SYS_MMAP, (syscall_handler_t)sys_mmap);
-    syscall_register(SYS_MUNMAP, (syscall_handler_t)sys_munmap);
+    syscall_register(SYS_MMAP, (syscall_handler_t)syscall_mmap_legacy);
+    syscall_register(SYS_MUNMAP, (syscall_handler_t)syscall_munmap_legacy);
     
     // Threading syscalls (Phase 3.2)
     syscall_register(SYS_CLONE, (syscall_handler_t)sys_clone);
@@ -219,7 +224,7 @@ int sys_sleep(uint32_t ticks) {
 /**
  * Set the program break (heap end)
  */
-int sys_brk(uint32_t addr) {
+static int syscall_brk_legacy(uint32_t addr) {
     return process_brk(addr);
 }
 
@@ -379,7 +384,7 @@ int sys_spawn(uint32_t path, uint32_t argv, uint32_t envp) {
  * 
  * Returns mapped virtual address, or -1 on error
  */
-int sys_mmap(uint32_t addr, uint32_t length, uint32_t prot, uint32_t flags, uint32_t fd) {
+static int syscall_mmap_legacy(uint32_t addr, uint32_t length, uint32_t prot, uint32_t flags, uint32_t fd) {
     extern void serial_printf(const char *fmt, ...);
     extern unsigned int pmm_alloc_page(void);
     extern void vmm_map_page(unsigned int vaddr, unsigned int paddr, unsigned int flags);
@@ -446,7 +451,7 @@ int sys_mmap(uint32_t addr, uint32_t length, uint32_t prot, uint32_t flags, uint
  * 
  * Returns 0 on success, -1 on error
  */
-int sys_munmap(uint32_t addr, uint32_t length) {
+static int syscall_munmap_legacy(uint32_t addr, uint32_t length) {
     extern void serial_printf(const char *fmt, ...);
     extern void pmm_free_page(unsigned int address);
     extern unsigned int vmm_get_physical(unsigned int vaddr);

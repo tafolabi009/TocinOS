@@ -189,3 +189,39 @@ cpu_info_t* cpu_get_info(void) {
     }
     return &cpu_info;
 }
+
+/**
+ * Get CPU brand string
+ */
+void cpu_get_brand(char *brand) {
+    if (!cpu_detected) cpu_detect();
+    // Copy brand string (simplified - just use vendor for now)
+    const char *src = cpu_info.vendor;
+    int i = 0;
+    while (src[i] && i < 47) { brand[i] = src[i]; i++; }
+    brand[i] = '\0';
+}
+
+/**
+ * Get CPU family
+ */
+unsigned int cpu_get_family(void) {
+    if (!cpu_detected) cpu_detect();
+    return cpu_info.family;
+}
+
+/**
+ * Get CPU model
+ */
+unsigned int cpu_get_model(void) {
+    if (!cpu_detected) cpu_detect();
+    return cpu_info.model;
+}
+
+/**
+ * Get CPU stepping
+ */
+unsigned int cpu_get_stepping(void) {
+    if (!cpu_detected) cpu_detect();
+    return cpu_info.stepping;
+}

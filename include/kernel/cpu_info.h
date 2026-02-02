@@ -78,5 +78,9 @@ void cpu_print_info(void);
 int cpu_has_feature(unsigned int feature);
 const char* cpu_get_vendor(void);
 cpu_info_t* cpu_get_info(void);
+void cpu_get_brand(char *brand);
+unsigned int cpu_get_family(void);
+unsigned int cpu_get_model(void);
+unsigned int cpu_get_stepping(void);
 
 #endif // CPU_INFO_H

@@ -101,22 +101,29 @@ unsigned int pmm_alloc_page(void) {
 - System calls interface
 - Process management improvements
 - Memory management optimizations
+- Threading support (pthreads, clone)
 
 ### 2. Driver Development
-- Keyboard driver (PS/2)
-- Timer driver (PIT)
-- Storage drivers (ATA/IDE)
-- Network drivers
+- USB host controller drivers
+- Network interface cards
+- AHCI/SATA storage
 
 ### 3. File System
-- FAT32 support
-- Custom file system design
-- VFS (Virtual File System) layer
+- ext4 filesystem support
+- NFS client
+- Filesystem caching improvements
 
-### 4. User Mode
-- User space programs
-- Ring 3 support
-- ELF loader
+### 4. Dynamic Linking
+- Shared library loading (libc.so)
+- Symbol resolution improvements
+- Lazy binding (PLT/GOT)
+- TLS (Thread-Local Storage)
+
+### 5. Networking
+- TCP/IP stack completion
+- Socket API
+- DHCP client
+- DNS resolver
 
 ### 5. Documentation
 - Code comments
