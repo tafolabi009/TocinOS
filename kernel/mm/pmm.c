@@ -127,13 +127,23 @@ void pmm_free_page(unsigned int address) {
 }
 
 /**
- * Mark a page as used
+ * Mark a page as used.
+ *
+ * Idempotent (roadmap bug #6): marking an already-used page no longer
+ * double-increments used_pages, so callers may re-reserve overlapping
+ * ranges (bootinfo regions vs. kernel footprint) and the counters stay
+ * exact. Pages outside the managed window are ignored.
  */
 void pmm_set_page_used(unsigned int page) {
+    if (page >= total_pages) {
+        return;
+    }
     unsigned int byte = page / 8;
     unsigned int bit = page % 8;
-    memory_bitmap[byte] |= (1 << bit);
-    used_pages++;
+    if (!(memory_bitmap[byte] & (1u << bit))) {
+        memory_bitmap[byte] |= (1u << bit);
+        used_pages++;
+    }
 }
 
 /**

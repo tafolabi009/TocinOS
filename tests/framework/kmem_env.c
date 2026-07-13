@@ -37,3 +37,13 @@ int kmem_env_reset(void) {
     if (map_fixed(FRAME_WINDOW_BASE, FRAME_WINDOW_SIZE)) return -1;
     return 0;
 }
+
+/*
+ * Writable window at the buddy allocator's kernel base (16MB). The buddy
+ * itself never dereferences managed memory, but the slab allocator writes
+ * its free lists INTO buddy pages, so slab tests need real memory behind
+ * the addresses buddy_alloc() returns. Re-mapping zeroes the window.
+ */
+int kmem_env_map_buddy_window(unsigned long bytes) {
+    return map_fixed(BUDDY_WINDOW_BASE, bytes);
+}

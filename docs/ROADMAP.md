@@ -147,14 +147,17 @@ source Feb 2026):
 - **Tocin (hosted)** — **first-class userspace language from M5:** system utilities,
   `mkfs.tocinfs`/`fsck`, the GUI toolkit and apps, services. It has GC, threads, channels,
   C FFI — a strong app language on top of our libc.
-- **Tocin (freestanding)** — kernel *leaf modules only* for now (its freestanding mode is
-  real but thin: int-addressed memory, no typed pointers, host-triple-only codegen).
-  Upstream tocinlang work needed before deeper kernel use, filed as issues there:
-  1. typed pointers + `repr(C)` struct layout (MMIO register structs)
-  2. cross-compilation: `--target x86_64-unknown-none`, code model, red-zone control
-  3. naked/interrupt function attributes + calling-convention control
-  4. runtime-free aggregates in freestanding mode
-  5. entry-point/linker-script ergonomics
+- **Tocin (freestanding)** — the five upstream compiler gaps identified in the
+  Feb 2026 assessment are now **closed on tocinlang master** (PRs #39–41: bootable
+  kernel + module-level asm + cross-compilation + naked/interrupt attributes;
+  typed MMIO structs via `mmio struct`/`mmioAt`; escape analysis stack-allocating
+  non-escaping structs, removing the allocator dependency for local aggregates —
+  verified: master builds clean, JIT + ctest suites pass, non-escaping struct
+  emits zero `__tocin_alloc` references). Kernel-side Tocin is therefore
+  unblocked: first targets are leaf driver modules (typed-MMIO fit) in the M4
+  driver build-out and `mkfs.tocinfs`/`fsck.tocinfs` at M4–M5 as planned. A
+  toolchain hook (`TOCIN=` in the build, Tocin objects linked into kernel.elf
+  via the C ABI) lands with the first such module.
 
 ---
 
@@ -189,6 +192,9 @@ in CI. Order encodes hard dependencies.
 | 3 | `enqueue_task` inserts at list head, so same-priority round-robin never rotates (LIFO re-pick, starvation risk) | **M3** |
 | 4 | `fat.c` masks attributes with `& FAT_ATTR_LONG_NAME` (0x0F), hiding any READ_ONLY/HIDDEN/SYSTEM file — should be `(attr & 0x3F) == 0x0F` | **M4** (small; may fix earlier) |
 | 5 | `task_exit` discards its exit code; a blocked sole task stays `rq->current` when nothing else is runnable | **M3** |
+| 6 | `pmm_set_page_used` double-increments `used_pages` when the page is already set | **M2** |
+| 7 | `vmm_map_range`/`vmm_unmap_range`/`vmm_is_mapped`/`vmm_get_page_flags` declared in memory.h but implemented nowhere (link error if ever called) | **M2** |
+| 8 | PMM's fixed 2MB low reservation is smaller than the real kernel footprint (BSS ends ~3.4MB); mitigated with a [2MB, 3.5MB) reserve in kernel_main — proper fix is an `_end` symbol in linker_x86.ld | **M2** |
 
 #### Dead-code triage (wired or deleted — decision per item)
 
@@ -220,9 +226,18 @@ in CI. Order encodes hard dependencies.
 - **Accept:** same kernel binary boots via BIOS and UEFI paths in CI
 
 ### M2 — Memory management, for real + 64-bit userspace
-- Buddy allocator + slab live as *the* kernel allocators (delete bitmap-only path)
-- Demand paging + `mmap` backed by page cache; copy-on-write `fork`
-- x86-64: 4-level paging, `syscall`/`sysret`, 64-bit user programs
+- [x] Buddy allocator + slab live at boot: buddy owns [16MB, top) for page-range
+      allocations, slab-backed `kmalloc` on top (size-class caches ≤1KB, buddy
+      fallback above); PMM bitmap keeps [0, 16MB) for legacy single-page users
+      with a double-allocation guard — full bitmap retirement deferred until
+      demand paging lands
+- [ ] Demand paging + `mmap` backed by page cache; copy-on-write `fork`
+- [x] x86-64 boot contract proven: TocinBoot ELF64 long-mode handoff (§6.2)
+      verified on OVMF with a 64-bit stub kernel (`make kernel64-stub` +
+      `make -C boot/uefi test64`)
+- [ ] x86-64 kernel port (staged: core → tasking/userspace → drivers; today
+      `ARCH=x86_64` fails on 5 files of 32-bit inline asm + ~178 pointer-width
+      sites + 2-level paging model), then `syscall`/`sysret`, 64-bit user programs
 - **Accept:** stress test (fork storm + mmap churn) survives; RSS budget check added to CI
 
 ### M3 — Processes & threads that work

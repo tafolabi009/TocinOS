@@ -368,8 +368,8 @@ int fat_open(const char *path, fat_file_t *file) {
             if (entries[j].name[0] == 0xE5) {
                 continue; // Deleted entry
             }
-            if (entries[j].attributes & FAT_ATTR_LONG_NAME) {
-                continue; // Skip long filename entries
+            if ((entries[j].attributes & FAT_ATTR_LFN_MASK) == FAT_ATTR_LONG_NAME) {
+                continue; // Skip long filename entries (exact 0x0F match only)
             }
             if (entries[j].attributes & FAT_ATTR_VOLUME_ID) {
                 continue; // Skip volume label
@@ -529,10 +529,13 @@ int fat_list_dir(const char *path, fat_dir_entry_t *entries, int max_entries) {
             if (dir_entries[j].name[0] == 0xE5) {
                 continue; // Deleted entry
             }
-            if (dir_entries[j].attributes & FAT_ATTR_LONG_NAME) {
-                continue; // Skip LFN entries
+            if ((dir_entries[j].attributes & FAT_ATTR_LFN_MASK) == FAT_ATTR_LONG_NAME) {
+                continue; // Skip LFN entries (exact 0x0F match only)
             }
-            
+            if (dir_entries[j].attributes & FAT_ATTR_VOLUME_ID) {
+                continue; // Skip the volume label, like fat_open() does
+            }
+
             entries[entry_count++] = dir_entries[j];
         }
     }

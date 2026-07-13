@@ -42,6 +42,83 @@ static volatile unsigned short *vga_buffer = (unsigned short *)VGA_MEMORY;
 static int vga_x = 0;
 static int vga_y = 0;
 
+// Boot identity-map page tables for [4MB, 128MB) (PDE 1..31). These MUST
+// be static kernel memory: they are installed right after vmm_init(),
+// when the only mapped RAM is the low 4MB — allocating them from the PMM
+// could return a frame above 4MB, whose zero-fill would fault before the
+// IDT even exists (observed as a triple fault on the TocinBoot BIOS path,
+// where the memmap leaves no free frames below 4MB). BSS is covered by
+// the kernel-footprint reservation below, so the PMM can never hand these
+// pages out.
+#define BOOT_IDENTITY_TABLES 31  /* PDE 1..31 => [4MB, 128MB) */
+static uint32_t boot_identity_tables[BOOT_IDENTITY_TABLES][1024]
+    __attribute__((aligned(4096)));
+
+/**
+ * M2 self-verification, run once at boot after process_init(): drives
+ * the REAL page-fault path (not the host-test shortcut) — an anonymous
+ * mmap with no eager frames, a write that demand-zero faults, a COW
+ * fork, a write that COW-copies, and a child reap that releases the
+ * shared frame. Failures only log; boot continues.
+ */
+static void mm_selftest(void) {
+    void *p = sys_mmap((void *)0, 2 * PAGE_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        serial_printf("[MM] selftest FAIL: anonymous mmap\n");
+        return;
+    }
+    if (vmm_is_mapped((uint32_t)p)) {
+        serial_printf("[MM] selftest FAIL: mmap mapped eager frames\n");
+        return;
+    }
+
+    volatile uint32_t *word = (volatile uint32_t *)p;
+    *word = 0x51E1F7E5u;                      /* -> #PF, demand-zero */
+    uint32_t phys_before = vmm_get_physical((uint32_t)p);
+    if (*word != 0x51E1F7E5u || !phys_before) {
+        serial_printf("[MM] selftest FAIL: demand-zero fault\n");
+        return;
+    }
+    serial_printf("[MM] demand paging verified: demand-zero #PF mapped "
+                  "0x%x -> frame 0x%x\n", (uint32_t)p, phys_before);
+
+    int32_t child = process_fork();           /* COW clone */
+    if (child < 0) {
+        serial_printf("[MM] selftest FAIL: fork\n");
+        return;
+    }
+    uint32_t refs_shared = frame_ref_get(phys_before);
+
+    *word = 0xC0FFEE42u;                      /* -> #PF, COW break */
+    uint32_t phys_after = vmm_get_physical((uint32_t)p);
+
+    process_kill((uint32_t)child, 9);
+    int status = 0;
+    process_wait(child, &status, WNOHANG);    /* reap -> drop child refs */
+    uint32_t refs_old_after_reap = frame_ref_get(phys_before);
+
+    /* Read back BEFORE munmap — the mapping is gone afterwards, and a
+     * post-unmap dereference is an unresolvable kernel-context #PF
+     * (which is exactly what the fault path should and does do). */
+    uint32_t final_word = *word;
+
+    sys_munmap(p, 2 * PAGE_SIZE);
+
+    if (refs_shared == 2 && final_word == 0xC0FFEE42u &&
+        phys_after && phys_after != phys_before &&
+        refs_old_after_reap == 0) {
+        serial_printf("[MM] COW fork enabled: write copied frame "
+                      "0x%x -> 0x%x (refs 2 -> 1+1), child reap freed "
+                      "the shared frame\n", phys_before, phys_after);
+    } else {
+        serial_printf("[MM] selftest FAIL: COW fork (refs_shared=%u "
+                      "phys 0x%x -> 0x%x refs_after_reap=%u)\n",
+                      refs_shared, phys_before, phys_after,
+                      refs_old_after_reap);
+    }
+}
+
 /**
  * Clear the screen
  */
@@ -146,10 +223,94 @@ void kernel_main(void) {
     } else {
         pmm_init();
     }
-    
+
+    // Kernel-footprint guard (roadmap bug #8): pmm_init() reserves only
+    // [0, 2MB), but the kernel image extends past 2MB (buddy descriptor
+    // table, driver arrays, frame refcount table and the 16KB boot stack
+    // all live in BSS). Without this, the very first pmm_alloc_page()
+    // would hand out frames overlaying live kernel data. The reservation
+    // end is now derived from the linker-provided _kernel_end symbol
+    // (linker_x86.ld) instead of the old hardcoded 3.5MB guess, plus a
+    // 64KB guard band, rounded up to a page. pmm_set_page_used() is
+    // idempotent (bug #6 fix), so overlap with bootinfo reservations
+    // keeps the counters exact.
+    {
+        extern char _kernel_end[];  /* linker_x86.ld: end of .bss */
+        uint32_t kernel_end = (uint32_t)(uintptr_t)_kernel_end;
+        uint32_t reserve_end = (kernel_end + 0x10000u + PAGE_SIZE - 1u)
+                               & ~(uint32_t)(PAGE_SIZE - 1u);
+        for (unsigned int pg = (2u * 1024u * 1024u) / PAGE_SIZE;
+             pg < reserve_end / PAGE_SIZE; pg++) {
+            pmm_set_page_used(pg);
+        }
+        serial_printf("[PMM] kernel footprint reserved to 0x%x "
+                      "(_kernel_end=0x%x + 64KB guard)\n",
+                      reserve_end, kernel_end);
+    }
+
+    // Buddy allocator (M2) — physical ownership split (see memory.h):
+    // the PMM bitmap keeps [0, 16MB) for legacy single-page users (page
+    // tables, user frames, task stacks); the buddy owns [16MB, top) for
+    // page-range allocations and the slab/kmalloc backing store. This
+    // must run BEFORE vmm_init(): the bootinfo memmap entries live at
+    // their original physical address, which is only dereferenceable
+    // while paging is still off (same rule as pmm_init_from_bootinfo).
+    // The buddy itself never touches the memory it manages, so managing
+    // still-unmapped pages here is safe.
+    serial_printf("[INIT] Buddy init...\n");
+    kernel_print("[*] Initializing Buddy Allocator...\n");
+    buddy_init_from_bootinfo(bootinfo_present() ? bootinfo_get()
+                                                : (const tocinboot_info *)0);
+    {
+        // Mark every buddy-managed page as used in the PMM bitmap so the
+        // two allocators can never hand out the same frame. Pages the
+        // buddy skipped (bootinfo holes, framebuffer) were already
+        // reserved by pmm_init_from_bootinfo, so the counters stay exact.
+        uint32_t bstart, bend;
+        buddy_get_region(&bstart, &bend);
+        for (uint32_t addr = bstart; addr < bend; addr += PAGE_SIZE) {
+            if (buddy_addr_is_managed(addr)) {
+                pmm_set_page_used(addr / PAGE_SIZE);
+            }
+        }
+    }
+    serial_printf("[BUDDY] managing %u MB in %u orders\n",
+                  buddy_get_managed_pages() / 256u, (uint32_t)MAX_ORDER);
+
     serial_printf("[INIT] VMM init...\n");
     kernel_print("[*] Initializing Virtual Memory Manager...\n");
     vmm_init();
+
+    // Identity-map [4MB, 128MB) with the static boot tables (see their
+    // declaration above): vmm_init() only maps the low 4MB, but
+    //  - the PMM hands out frames up to 16MB (page tables, task stacks,
+    //    ELF segment copies are written through physical addresses), and
+    //  - the slab writes its free lists INTO buddy pages [16MB, top) and
+    //    kmalloc callers dereference them.
+    // Kernel-only mappings; PDEs 32+ (user VAs, framebuffer MMIO) are
+    // untouched and still created on demand by vmm_map_page(). In the
+    // buddy region only MANAGED pages are mapped, so bootinfo holes
+    // (ACPI, framebuffer, reserved RAM) never get a stray writable
+    // mapping; buddy blocks are always contiguous runs of managed pages,
+    // so this covers every address the buddy can ever return. This must
+    // run BEFORE fbcon_init(), whose page tables come from the PMM and
+    // may themselves live above 4MB.
+    {
+        uint32_t *dir = (uint32_t *)vmm_get_current_directory();
+        for (uint32_t t = 0; t < BOOT_IDENTITY_TABLES; t++) {
+            uint32_t chunk_base = (t + 1u) * 0x400000u; /* PDE t+1 */
+            for (uint32_t i = 0; i < 1024u; i++) {
+                uint32_t addr = chunk_base + i * PAGE_SIZE;
+                int mapped = (addr < BUDDY_REGION_START)
+                                 ? 1
+                                 : buddy_addr_is_managed(addr);
+                boot_identity_tables[t][i] =
+                    mapped ? (addr | PAGE_PRESENT | PAGE_WRITE) : 0;
+            }
+            dir[t + 1] = ((uint32_t)(uintptr_t)boot_identity_tables[t]) |
+                         PAGE_PRESENT | PAGE_WRITE;
+        }
+    }
 
     // Framebuffer splash (M1): needs bootinfo (fb description) AND paging
     // (fbcon identity-maps the fb MMIO range, which lies above the
@@ -157,6 +318,14 @@ void kernel_main(void) {
     // No-op on legacy boot paths without a tocinboot framebuffer.
     fbcon_init();
 
+    // Slab caches on top of the buddy: kmalloc/kfree go live here. The
+    // existing call sites (net stack, USB, tmpfs/procfs/devfs, fs cache)
+    // already call kmalloc — until now it always returned NULL because
+    // slab_init() never ran on any boot path.
+    serial_printf("[INIT] Slab init...\n");
+    kernel_print("[*] Initializing Slab Allocator...\n");
+    slab_init();
+    serial_printf("[SLAB] caches ready (kmalloc live)\n");
 
     // Initialize task scheduler
     serial_printf("[INIT] Scheduler init...\n");
@@ -184,6 +353,15 @@ void kernel_main(void) {
     kernel_print("[*] Initializing ISR handlers...\n");
     isr_init();
     serial_printf("[INIT] ISR done\n");
+
+    // Demand paging (M2): arm the #PF vector with the VMA fault
+    // resolver and zero the frame refcount table. From here on,
+    // not-present faults inside anonymous VMAs are demand-zero filled
+    // and write faults on PAGE_COW entries are COW-broken; unresolved
+    // user faults kill only the faulting task. Prints
+    // "[MM] demand paging armed".
+    kernel_print("[*] Arming demand paging (#PF handler)...\n");
+    demand_paging_init();
     
     // Initialize timer (100 Hz)
     serial_printf("[INIT] Timer init...\n");
@@ -216,6 +394,14 @@ void kernel_main(void) {
     // Initialize process management
     kernel_print("[*] Initializing Process Management...\n");
     process_init();
+
+    // M2 in-VM self-verification: exercise the REAL fault path end to
+    // end — demand-zero via an actual #PF, then COW fork + write + child
+    // reap. Runs in ring 0; CR0.WP is set (vmm_switch_directory), so the
+    // COW write genuinely faults. Greppable serial lines:
+    //   "[MM] demand paging verified: ..."
+    //   "[MM] COW fork enabled: ..."
+    mm_selftest();
     
     // Initialize VESA graphics
     kernel_print("[*] Initializing VESA Graphics...\n");

@@ -199,6 +199,9 @@ test-unit:
 			-Wno-pointer-to-int-cast -DSTDINT_H -include stdint.h \
 			tests/test_runner.c tests/unit/*.c tests/framework/*.c \
 			$(KERNEL_DIR)/mm/pmm.c $(KERNEL_DIR)/mm/vmm.c \
+			$(KERNEL_DIR)/mm/buddy.c $(KERNEL_DIR)/mm/slab.c \
+			$(KERNEL_DIR)/mm/vma.c $(KERNEL_DIR)/mm/demand.c \
+			$(KERNEL_DIR)/mm/framerefs.c \
 			$(KERNEL_DIR)/task/scheduler.c $(KERNEL_DIR)/fat.c \
 			-o $(BUILD_DIR)/test_runner 2>&1 || \
 		{ echo "Failed to compile tests"; exit 1; }; \

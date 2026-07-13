@@ -186,8 +186,16 @@ void isr_handler(registers_t *regs) {
         } else {
             kernel_print("Unknown Exception");
         }
-        serial_printf("\n[EXCEPTION] EIP=0x%x CS=0x%x ERR=0x%x\n", 
+        serial_printf("\n[EXCEPTION] EIP=0x%x CS=0x%x ERR=0x%x\n",
                       regs->eip, regs->cs, regs->err_code);
+        if (regs->int_no == 14) {
+            // Page fault before demand_paging_init() registered the real
+            // handler (kernel/mm/demand.c): still dump the fault address.
+            uint32_t cr2;
+            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+            serial_printf("[EXCEPTION] CR2=0x%x (early #PF, no handler armed)\n",
+                          cr2);
+        }
         kernel_print("\n");
         
         // Halt the system

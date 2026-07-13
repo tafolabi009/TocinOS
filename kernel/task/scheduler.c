@@ -104,13 +104,18 @@ static void enqueue_task(cpu_runqueue_t *rq, task_t *task) {
         return;
     }
     
-    // Add to priority queue
-    task->next = rq->ready_lists[task->priority];
-    task->prev = 0;
-    if (rq->ready_lists[task->priority]) {
-        rq->ready_lists[task->priority]->prev = task;
+    // Append at the TAIL of the priority list (O(1) via ready_tails) so
+    // same-priority tasks round-robin fairly. Head insertion made the
+    // scheduler re-pick the last enqueued task forever (LIFO starvation,
+    // roadmap bug #3).
+    task->next = 0;
+    task->prev = rq->ready_tails[task->priority];
+    if (rq->ready_tails[task->priority]) {
+        rq->ready_tails[task->priority]->next = task;
+    } else {
+        rq->ready_lists[task->priority] = task;
     }
-    rq->ready_lists[task->priority] = task;
+    rq->ready_tails[task->priority] = task;
     rq->nr_running++;
 }
 
@@ -130,8 +135,10 @@ static void dequeue_task(cpu_runqueue_t *rq, task_t *task) {
     
     if (task->next) {
         task->next->prev = task->prev;
+    } else {
+        rq->ready_tails[task->priority] = task->prev;
     }
-    
+
     task->next = 0;
     task->prev = 0;
     rq->nr_running--;
@@ -214,6 +221,7 @@ void scheduler_init_cpu(int cpu_id) {
     
     for (int i = 0; i <= MAX_NORMAL_PRIORITY; i++) {
         rq->ready_lists[i] = 0;
+        rq->ready_tails[i] = 0;
     }
 }
 
@@ -267,19 +275,32 @@ int task_create_ex(void (*entry_point)(void), const char *name, sched_policy_t p
     task->stats.preemptions = 0;
     task->stats.migrations = 0;
     
-    // Allocate stack
-    if (stack_size < 4096) {
-        stack_size = 4096;
+    // Allocate stack.
+    //
+    // The whole [stack_base, stack_base + stack_size) range must really be
+    // backed by memory, so the stack comes from the buddy allocator, which
+    // hands out contiguous power-of-two page ranges (kernel.c initializes
+    // it before the scheduler). The old code took ONE 4 KiB page from
+    // pmm_alloc_page() while pointing esp stack_size (default 16 KiB)
+    // bytes above it -- 12 KiB past the frame (roadmap bug #1).
+    // stack_size is rounded up to the allocated block size, so
+    // esp == stack_base + stack_size is the true top of the allocation.
+    // Budget: MAX_TASKS (256) tasks x 16 KiB default stack = 4 MiB out of
+    // the >= 96 MiB buddy region.
+    if (stack_size < PAGE_SIZE) {
+        stack_size = PAGE_SIZE;
     }
-    task->stack_size = stack_size;
-    task->stack_base = pmm_alloc_page();
-    if (!task->stack_base) {
+    uint32_t stack_order = buddy_get_order(stack_size);
+    void *stack_mem = (stack_order < MAX_ORDER) ? buddy_alloc(stack_order) : 0;
+    if (!stack_mem) {
         free_task_id(task_id);
         return -1;
     }
-    
+    task->stack_base = (uint32_t)stack_mem;
+    task->stack_size = (uint32_t)PAGE_SIZE << stack_order;
+
     // Initialize CPU state
-    task->esp = task->stack_base + stack_size;
+    task->esp = task->stack_base + task->stack_size;
     task->ebp = task->esp;
     task->eip = (uint32_t)entry_point;
     task->eflags = 0x202;  // IF=1 (interrupts enabled)
@@ -318,7 +339,13 @@ void scheduler_schedule(void) {
     // Pick next task
     task_t *next = pick_next_task(rq);
     if (!next) {
-        return;  // No task to run
+        // Nothing is runnable and this CPU has no idle task: go idle.
+        // Never leave a blocked/sleeping/zombie prev installed as
+        // rq->current -- it is not running (roadmap bug #5). A runnable
+        // prev cannot reach this point: it was re-enqueued above and
+        // pick_next_task() would have returned it.
+        rq->current = 0;
+        return;
     }
     
     // Remove from ready queue
@@ -482,19 +509,56 @@ void task_exit(int exit_code) {
         return;
     }
     
-    (void)exit_code;  // TODO: Store exit code
-    
+    // Store the exit code and keep the slot allocated as a ZOMBIE so the
+    // code stays readable until task_reap() collects it (roadmap bug #5).
+    // Resources (stack, task ID) are released at reap time, not here --
+    // the old code freed the stack this function is still executing on.
+    // Blocking wait()/waitpid() semantics on top of the reap primitive
+    // are deferred to M3; until a caller reaps, exited tasks stay
+    // zombies (same contract as UNIX).
+    current->exit_code = exit_code;
     current->state = TASK_ZOMBIE;
-    
-    // Free task resources
-    if (current->stack_base) {
-        pmm_free_page(current->stack_base);
-    }
-    
-    free_task_id(current->id);
-    
-    // Schedule next task
+
+    // Schedule next task (goes idle if nothing else is runnable)
     scheduler_schedule();
+}
+
+/**
+ * Read the exit code of a ZOMBIE (exited, not yet reaped) task.
+ * Returns 0 and fills *exit_code on success, -1 otherwise.
+ */
+int task_get_exit_code(int task_id, int *exit_code) {
+    task_t *task = get_task(task_id);
+    if (!task || task->state != TASK_ZOMBIE) {
+        return -1;
+    }
+    if (exit_code) {
+        *exit_code = task->exit_code;
+    }
+    return 0;
+}
+
+/**
+ * Reap a ZOMBIE task: hand back its exit code, release its stack and
+ * free its task ID. Returns 0 on success, -1 if the task does not exist
+ * or has not exited. This is the minimal collection primitive; the
+ * blocking wait()/waitpid() layer that calls it is an M3 item.
+ */
+int task_reap(int task_id, int *exit_code) {
+    task_t *task = get_task(task_id);
+    if (!task || task->state != TASK_ZOMBIE) {
+        return -1;
+    }
+    if (exit_code) {
+        *exit_code = task->exit_code;
+    }
+    if (task->stack_base) {
+        buddy_free_block((void *)task->stack_base);
+        task->stack_base = 0;
+    }
+    task->state = TASK_TERMINATED;
+    free_task_id(task_id);
+    return 0;
 }
 
 /**
@@ -518,6 +582,13 @@ int task_get_current_id(void) {
 task_t* task_get_current(void) {
     cpu_runqueue_t *rq = &cpu_runqueues[current_cpu];
     return rq->current;
+}
+
+/**
+ * Look up a live (allocated) task by ID; NULL if the ID is not in use
+ */
+task_t* task_get_by_id(int task_id) {
+    return get_task(task_id);
 }
 
 /**
@@ -732,9 +803,21 @@ void task_pi_deboost(int task_id) {
         return;
     }
     
-    // Restore static priority
+    // Restore static priority. A READY task is linked into the ready
+    // list for its CURRENT priority, so it must be dequeued before the
+    // priority changes and re-enqueued after (the same dance as
+    // task_set_priority and task_pi_boost). Writing the priority in
+    // place desynchronized the task from its list, and later dequeues
+    // corrupted the wrong list head (roadmap bug #2).
     task->effective_priority = task->static_priority;
-    task->priority = task->static_priority;
+    if (task->state == TASK_READY) {
+        cpu_runqueue_t *rq = &cpu_runqueues[task->cpu];
+        dequeue_task(rq, task);
+        task->priority = task->static_priority;
+        enqueue_task(rq, task);
+    } else {
+        task->priority = task->static_priority;
+    }
 }
 
 /**

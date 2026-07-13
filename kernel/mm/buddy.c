@@ -1,276 +1,420 @@
 /**
- * TocinOS Buddy Allocator Implementation
- * 
- * Efficient memory allocation using the buddy system algorithm.
- * Supports allocations in powers of 2 from 4KB to 8MB.
+ * TocinOS Buddy Allocator
+ *
+ * Binary buddy allocator for the HIGH physical region [16MB, top). The
+ * low region [0, 16MB) stays with the PMM bitmap allocator; kernel.c
+ * reserves every buddy-managed page in the PMM bitmap at boot so the two
+ * allocators can never hand out the same frame (see memory.h for the
+ * documented split).
+ *
+ * Design notes:
+ *  - All bookkeeping lives in a static descriptor table (6 bytes/page,
+ *    up to 28672 pages = 112MB). The allocator NEVER dereferences the
+ *    memory it manages, so it can be initialized before the region is
+ *    virtually mapped, and host unit tests can drive it over address
+ *    ranges that are not mapped in the test process at all.
+ *  - Buddy pairing is done on page INDICES relative to the region start
+ *    (idx ^ (1 << order)), so the region start only needs page alignment
+ *    for internal consistency. Natural physical alignment of returned
+ *    blocks additionally requires the region start to be aligned to the
+ *    largest block size; the kernel's 16MB start satisfies that.
+ *  - Every page carries an explicit state (reserved / free head / free
+ *    tail / allocated head / allocated tail) and the head of each block
+ *    records its order. buddy_free() validates against that record, which
+ *    yields a real double-free / wrong-order / mid-block-pointer guard
+ *    and O(1) coalescing checks (the AI-dump predecessor walked the free
+ *    list on every merge step and corrupted it on double frees).
+ *
+ * This file replaces an earlier non-functional AI-generated draft; see
+ * tests/unit/test_buddy.c for the behavioral contract.
  */
 
 #include "../include/kernel/memory.h"
-#include "../include/kernel/kernel.h"
 
-#define BUDDY_START_ADDR 0x400000  // 4MB
-#define BUDDY_END_ADDR   0x8000000 // 128MB
-#define BUDDY_TOTAL_PAGES ((BUDDY_END_ADDR - BUDDY_START_ADDR) / PAGE_SIZE)
+#define BUDDY_MAX_PAGES ((BUDDY_REGION_LIMIT - BUDDY_REGION_START) / PAGE_SIZE)
 
-static buddy_allocator_t buddy_allocator;
-static buddy_page_t page_descriptors[BUDDY_TOTAL_PAGES];
-static int buddy_initialized = 0;
+#define BP_NIL 0xFFFFu  /* free-list terminator (fits: capacity < 65535) */
 
-/**
- * Helper: Get page descriptor for physical address
- */
-static buddy_page_t* addr_to_page(void *addr) {
-    uint32_t phys = (uint32_t)addr;
-    if (phys < BUDDY_START_ADDR || phys >= BUDDY_END_ADDR) {
-        return 0;
+/* Page states. RESERVED pages are inside the region span but never
+ * allocatable (bootinfo holes, framebuffer, beyond-usable tail). */
+enum {
+    BP_RESERVED = 0,
+    BP_FREE_HEAD,   /* head page of a free block (on a free list)   */
+    BP_FREE_TAIL,   /* interior page of a free block                */
+    BP_ALLOC_HEAD,  /* head page of a live allocation               */
+    BP_ALLOC_TAIL,  /* interior page of a live allocation           */
+};
+
+typedef struct {
+    uint16_t next;   /* free-list links (page indices), BP_NIL = none */
+    uint16_t prev;
+    uint8_t order;   /* meaningful on FREE_HEAD / ALLOC_HEAD pages    */
+    uint8_t state;   /* BP_* */
+} bpage_t;
+
+static bpage_t page_desc[BUDDY_MAX_PAGES];
+static uint16_t free_head[MAX_ORDER];
+static uint32_t free_blocks[MAX_ORDER];
+
+static uint32_t region_start;   /* page-aligned span, [region_start, region_end) */
+static uint32_t region_end;
+static uint32_t span_pages;     /* pages in the span, incl. reserved holes */
+static uint32_t managed_pages;  /* allocatable pages (holes excluded)      */
+static uint32_t free_pages_now; /* currently free pages                    */
+static int buddy_ready;
+
+/* ---- free list primitives ---------------------------------------------- */
+
+static void list_push(uint32_t idx, uint32_t order) {
+    page_desc[idx].state = BP_FREE_HEAD;
+    page_desc[idx].order = (uint8_t)order;
+    page_desc[idx].prev = BP_NIL;
+    page_desc[idx].next = free_head[order];
+    if (free_head[order] != BP_NIL) {
+        page_desc[free_head[order]].prev = (uint16_t)idx;
     }
-    uint32_t index = (phys - BUDDY_START_ADDR) / PAGE_SIZE;
-    return &page_descriptors[index];
+    free_head[order] = (uint16_t)idx;
+    free_blocks[order]++;
 }
 
-/**
- * Helper: Get physical address from page descriptor
- */
-static void* page_to_addr(buddy_page_t *page) {
-    uint32_t index = page - page_descriptors;
-    return (void *)(BUDDY_START_ADDR + (index * PAGE_SIZE));
-}
-
-/**
- * Helper: Get buddy address for a given address and order
- */
-static void* get_buddy(void *addr, uint32_t order) {
-    uint32_t phys = (uint32_t)addr;
-    uint32_t block_size = PAGE_SIZE << order;
-    return (void *)(phys ^ block_size);
-}
-
-/**
- * Helper: Remove page from free list
- */
-static void remove_from_free_list(buddy_page_t *page, uint32_t order) {
-    if (page->prev) {
-        page->prev->next = page->next;
+static void list_unlink(uint32_t idx, uint32_t order) {
+    if (page_desc[idx].prev != BP_NIL) {
+        page_desc[page_desc[idx].prev].next = page_desc[idx].next;
     } else {
-        buddy_allocator.free_lists[order] = page->next;
+        free_head[order] = page_desc[idx].next;
     }
-    
-    if (page->next) {
-        page->next->prev = page->prev;
+    if (page_desc[idx].next != BP_NIL) {
+        page_desc[page_desc[idx].next].prev = page_desc[idx].prev;
     }
-    
-    page->next = 0;
-    page->prev = 0;
-    buddy_allocator.free_pages[order]--;
+    page_desc[idx].next = BP_NIL;
+    page_desc[idx].prev = BP_NIL;
+    free_blocks[order]--;
 }
 
 /**
- * Helper: Add page to free list
+ * Insert the block headed at idx as free at the given order, merging with
+ * its buddy as long as the buddy is a free block of the same order. The
+ * caller must have already accounted the pages as free and must not have
+ * idx on any list.
  */
-static void add_to_free_list(buddy_page_t *page, uint32_t order) {
-    page->order = order;
-    page->next = buddy_allocator.free_lists[order];
-    page->prev = 0;
-    
-    if (buddy_allocator.free_lists[order]) {
-        buddy_allocator.free_lists[order]->prev = page;
-    }
-    
-    buddy_allocator.free_lists[order] = page;
-    buddy_allocator.free_pages[order]++;
-}
-
-/**
- * Initialize buddy allocator
- */
-void buddy_init(void) {
-    if (buddy_initialized) {
-        return;
-    }
-    
-    // Initialize free lists
-    for (uint32_t i = 0; i < MAX_ORDER; i++) {
-        buddy_allocator.free_lists[i] = 0;
-        buddy_allocator.free_pages[i] = 0;
-    }
-    
-    buddy_allocator.total_free = 0;
-    buddy_allocator.total_used = 0;
-    
-    // Initialize page descriptors
-    for (uint32_t i = 0; i < BUDDY_TOTAL_PAGES; i++) {
-        page_descriptors[i].next = 0;
-        page_descriptors[i].prev = 0;
-        page_descriptors[i].order = 0;
-        page_descriptors[i].flags = 0;
-        page_descriptors[i].ref_count = 0;
-    }
-    
-    // Add all memory to free lists at maximum order
-    uint32_t max_block_size = PAGE_SIZE << (MAX_ORDER - 1);
-    uint32_t num_max_blocks = (BUDDY_END_ADDR - BUDDY_START_ADDR) / max_block_size;
-    
-    for (uint32_t i = 0; i < num_max_blocks; i++) {
-        void *addr = (void *)(BUDDY_START_ADDR + (i * max_block_size));
-        buddy_page_t *page = addr_to_page(addr);
-        if (page) {
-            add_to_free_list(page, MAX_ORDER - 1);
-            buddy_allocator.total_free += (1 << (MAX_ORDER - 1));
+static void insert_and_coalesce(uint32_t idx, uint32_t order) {
+    while (order + 1 < MAX_ORDER) {
+        uint32_t bud = idx ^ (1u << order);
+        if (bud >= span_pages) {
+            break;  /* buddy would fall outside the span */
         }
-    }
-    
-    buddy_initialized = 1;
-    kernel_print("[BUDDY] Buddy allocator initialized (4MB-128MB)\n");
-}
-
-/**
- * Allocate memory block of given order
- */
-void* buddy_alloc(uint32_t order) {
-    if (!buddy_initialized || order >= MAX_ORDER) {
-        return 0;
-    }
-    
-    // Find the smallest available block >= requested order
-    uint32_t current_order = order;
-    while (current_order < MAX_ORDER && !buddy_allocator.free_lists[current_order]) {
-        current_order++;
-    }
-    
-    if (current_order >= MAX_ORDER) {
-        return 0;  // Out of memory
-    }
-    
-    // Get block from free list
-    buddy_page_t *page = buddy_allocator.free_lists[current_order];
-    remove_from_free_list(page, current_order);
-    
-    // Split block if necessary
-    while (current_order > order) {
-        current_order--;
-        
-        // Get buddy address
-        void *addr = page_to_addr(page);
-        void *buddy_addr = get_buddy(addr, current_order);
-        buddy_page_t *buddy_page = addr_to_page(buddy_addr);
-        
-        // Add buddy to free list
-        if (buddy_page) {
-            add_to_free_list(buddy_page, current_order);
+        if (page_desc[bud].state != BP_FREE_HEAD ||
+            page_desc[bud].order != order) {
+            break;  /* buddy not free at this order: cannot merge */
         }
-    }
-    
-    page->order = order;
-    page->ref_count = 1;
-    page->flags = 0;
-    
-    buddy_allocator.total_free -= (1 << order);
-    buddy_allocator.total_used += (1 << order);
-    
-    return page_to_addr(page);
-}
-
-/**
- * Free memory block of given order
- */
-void buddy_free(void *addr, uint32_t order) {
-    if (!buddy_initialized || !addr || order >= MAX_ORDER) {
-        return;
-    }
-    
-    buddy_page_t *page = addr_to_page(addr);
-    if (!page) {
-        return;
-    }
-    
-    // Decrement reference count
-    if (page->ref_count > 0) {
-        page->ref_count--;
-    }
-    
-    if (page->ref_count > 0) {
-        return;  // Still referenced
-    }
-    
-    buddy_allocator.total_free += (1 << order);
-    buddy_allocator.total_used -= (1 << order);
-    
-    // Try to coalesce with buddy
-    while (order < MAX_ORDER - 1) {
-        void *buddy_addr = get_buddy(addr, order);
-        buddy_page_t *buddy_page = addr_to_page(buddy_addr);
-        
-        if (!buddy_page || buddy_page->order != order || buddy_page->ref_count != 0) {
-            break;  // Cannot coalesce
-        }
-        
-        // Check if buddy is in free list
-        int found = 0;
-        buddy_page_t *curr = buddy_allocator.free_lists[order];
-        while (curr) {
-            if (curr == buddy_page) {
-                found = 1;
-                break;
-            }
-            curr = curr->next;
-        }
-        
-        if (!found) {
-            break;
-        }
-        
-        // Remove buddy from free list
-        remove_from_free_list(buddy_page, order);
-        
-        // Merge with buddy
-        if ((uint32_t)addr > (uint32_t)buddy_addr) {
-            addr = buddy_addr;
-            page = buddy_page;
-        }
-        
+        list_unlink(bud, order);
+        /* The higher-address head becomes an interior page. */
+        uint32_t head = (idx < bud) ? idx : bud;
+        uint32_t other = (idx < bud) ? bud : idx;
+        page_desc[other].state = BP_FREE_TAIL;
+        idx = head;
         order++;
     }
-    
-    // Add merged block to free list
-    page->order = order;
-    add_to_free_list(page, order);
+    list_push(idx, order);
 }
 
-/**
- * Allocate multiple contiguous pages
- */
+/* ---- initialization ------------------------------------------------------ */
+
+/** Reset all bookkeeping over [start, end); every page starts RESERVED. */
+static int buddy_setup(uint32_t start_addr, uint32_t end_addr) {
+    start_addr = (start_addr + PAGE_SIZE - 1) & ~(uint32_t)(PAGE_SIZE - 1);
+    end_addr &= ~(uint32_t)(PAGE_SIZE - 1);
+    if (end_addr <= start_addr) {
+        return -1;
+    }
+
+    span_pages = (end_addr - start_addr) / PAGE_SIZE;
+    if (span_pages > BUDDY_MAX_PAGES) {
+        span_pages = BUDDY_MAX_PAGES;
+        end_addr = start_addr + span_pages * PAGE_SIZE;
+    }
+    region_start = start_addr;
+    region_end = end_addr;
+    managed_pages = 0;
+    free_pages_now = 0;
+    buddy_ready = 0;
+
+    for (uint32_t i = 0; i < MAX_ORDER; i++) {
+        free_head[i] = BP_NIL;
+        free_blocks[i] = 0;
+    }
+    for (uint32_t i = 0; i < span_pages; i++) {
+        page_desc[i].next = BP_NIL;
+        page_desc[i].prev = BP_NIL;
+        page_desc[i].order = 0;
+        page_desc[i].state = BP_RESERVED;
+    }
+    return 0;
+}
+
+/** Hand one RESERVED page to the allocator (with coalescing). */
+static void release_page(uint32_t idx) {
+    managed_pages++;
+    free_pages_now++;
+    insert_and_coalesce(idx, 0);
+}
+
+int buddy_init(uint32_t start_addr, uint32_t end_addr) {
+    if (buddy_setup(start_addr, end_addr) != 0) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < span_pages; i++) {
+        release_page(i);
+    }
+    buddy_ready = 1;
+    return (int)managed_pages;
+}
+
+int buddy_init_from_bootinfo(const tocinboot_info *info) {
+    /* Page-usability scratch bitmap; only touched during init. */
+    static uint8_t usable_map[BUDDY_MAX_PAGES / 8];
+
+    if (!info || info->memmap_addr == 0 || info->memmap_count == 0 ||
+        info->memmap_entry_size < sizeof(tocinboot_mmap_entry)) {
+        /* No trustworthy memory map: fixed conservative fallback inside
+         * the 128MB assumption (same policy as the PMM). */
+        return buddy_init(BUDDY_REGION_START, BUDDY_FALLBACK_END);
+    }
+
+    if (buddy_setup(BUDDY_REGION_START, BUDDY_REGION_LIMIT) != 0) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < sizeof(usable_map); i++) {
+        usable_map[i] = 0;
+    }
+
+    /* Pass 1: mark pages FULLY covered by USABLE entries.
+     * Pass 2: clear pages with ANY overlap of a non-USABLE entry.
+     * This stays correct even if the map were unsorted or overlapping.
+     * Iterate by memmap_entry_size, never sizeof (spec §8.6). */
+    const unsigned char *base =
+        (const unsigned char *)(uintptr_t)info->memmap_addr;
+    for (int pass = 0; pass < 2; pass++) {
+        const unsigned char *p = base;
+        for (tb_u32 i = 0; i < info->memmap_count; i++) {
+            const tocinboot_mmap_entry *e = (const tocinboot_mmap_entry *)p;
+            p += info->memmap_entry_size;
+
+            tb_u64 lo = e->base;
+            tb_u64 hi = e->base + e->length;
+            if (hi < lo) {
+                hi = (tb_u64)0xFFFFFFFFFFFFFFFFull;  /* u64 wrap: clamp */
+            }
+            if (e->type == TOCINBOOT_MEM_USABLE) {
+                if (pass != 0) continue;
+                /* fully covered pages only */
+                lo = (lo + PAGE_SIZE - 1) & ~(tb_u64)(PAGE_SIZE - 1);
+                hi &= ~(tb_u64)(PAGE_SIZE - 1);
+            } else {
+                if (pass != 1) continue;
+                /* any overlap */
+                lo &= ~(tb_u64)(PAGE_SIZE - 1);
+                hi = (hi + PAGE_SIZE - 1) & ~(tb_u64)(PAGE_SIZE - 1);
+            }
+            if (hi <= (tb_u64)region_start || lo >= (tb_u64)region_end) {
+                continue;
+            }
+            if (lo < (tb_u64)region_start) lo = region_start;
+            if (hi > (tb_u64)region_end) hi = region_end;
+
+            uint32_t first = (uint32_t)((lo - region_start) / PAGE_SIZE);
+            uint32_t last = (uint32_t)((hi - region_start) / PAGE_SIZE);
+            for (uint32_t pg = first; pg < last; pg++) {
+                if (pass == 0) {
+                    usable_map[pg / 8] |= (uint8_t)(1u << (pg % 8));
+                } else {
+                    usable_map[pg / 8] &= (uint8_t)~(1u << (pg % 8));
+                }
+            }
+        }
+    }
+
+    /* Framebuffer is device memory even when a sloppy map calls it usable. */
+    if ((info->flags & TOCINBOOT_F_FB) && info->fb_base != 0) {
+        tb_u64 lo = info->fb_base & ~(tb_u64)(PAGE_SIZE - 1);
+        tb_u64 hi = info->fb_base +
+                    (tb_u64)info->fb_pitch * (tb_u64)info->fb_height;
+        hi = (hi + PAGE_SIZE - 1) & ~(tb_u64)(PAGE_SIZE - 1);
+        if (hi > (tb_u64)region_start && lo < (tb_u64)region_end) {
+            if (lo < (tb_u64)region_start) lo = region_start;
+            if (hi > (tb_u64)region_end) hi = region_end;
+            uint32_t first = (uint32_t)((lo - region_start) / PAGE_SIZE);
+            uint32_t last = (uint32_t)((hi - region_start) / PAGE_SIZE);
+            for (uint32_t pg = first; pg < last; pg++) {
+                usable_map[pg / 8] &= (uint8_t)~(1u << (pg % 8));
+            }
+        }
+    }
+
+    for (uint32_t pg = 0; pg < span_pages; pg++) {
+        if (usable_map[pg / 8] & (1u << (pg % 8))) {
+            release_page(pg);
+        }
+    }
+    buddy_ready = 1;
+    return (int)managed_pages;
+}
+
+/* ---- allocation ---------------------------------------------------------- */
+
+void* buddy_alloc(uint32_t order) {
+    if (!buddy_ready || order >= MAX_ORDER) {
+        return 0;
+    }
+
+    /* Smallest available order >= requested. */
+    uint32_t k = order;
+    while (k < MAX_ORDER && free_head[k] == BP_NIL) {
+        k++;
+    }
+    if (k >= MAX_ORDER) {
+        return 0;  /* out of memory (for this order) */
+    }
+
+    uint32_t idx = free_head[k];
+    list_unlink(idx, k);
+
+    /* Split down, pushing each upper half back as a free block. Splits
+     * must NOT coalesce (their buddy is the block being handed out). */
+    while (k > order) {
+        k--;
+        list_push(idx + (1u << k), k);
+    }
+
+    page_desc[idx].state = BP_ALLOC_HEAD;
+    page_desc[idx].order = (uint8_t)order;
+    for (uint32_t i = 1; i < (1u << order); i++) {
+        page_desc[idx + i].state = BP_ALLOC_TAIL;
+    }
+    free_pages_now -= (1u << order);
+
+    return (void *)(uintptr_t)(region_start + idx * PAGE_SIZE);
+}
+
+/* Validated free core: addr must be the head of a live allocation. */
+static int free_checked(void *addr, int expected_order) {
+    if (!buddy_ready || !addr) {
+        return -1;
+    }
+    uintptr_t a = (uintptr_t)addr;
+    if (a < region_start || a >= region_end || (a & (PAGE_SIZE - 1))) {
+        return -1;  /* foreign or unaligned address */
+    }
+    uint32_t idx = (uint32_t)((a - region_start) / PAGE_SIZE);
+    if (page_desc[idx].state != BP_ALLOC_HEAD) {
+        return -1;  /* double free, mid-block pointer, or never allocated */
+    }
+    uint32_t order = page_desc[idx].order;
+    if (expected_order >= 0 && (uint32_t)expected_order != order) {
+        return -1;  /* caller lied about the order */
+    }
+
+    for (uint32_t i = 1; i < (1u << order); i++) {
+        page_desc[idx + i].state = BP_FREE_TAIL;
+    }
+    free_pages_now += (1u << order);
+    insert_and_coalesce(idx, order);
+    return (int)order;
+}
+
+int buddy_free(void *addr, uint32_t order) {
+    if (order >= MAX_ORDER) {
+        return -1;
+    }
+    return free_checked(addr, (int)order) < 0 ? -1 : 0;
+}
+
+int buddy_free_block(void *addr) {
+    return free_checked(addr, -1);
+}
+
+/* ---- page-count helpers -------------------------------------------------- */
+
+static uint32_t order_for_pages(uint32_t num_pages) {
+    uint32_t order = 0;
+    while (order < MAX_ORDER && (1u << order) < num_pages) {
+        order++;
+    }
+    return order;  /* MAX_ORDER when num_pages > largest block */
+}
+
 void* buddy_alloc_pages(uint32_t num_pages) {
     if (num_pages == 0) {
         return 0;
     }
-    
-    uint32_t order = buddy_get_order(num_pages * PAGE_SIZE);
+    uint32_t order = order_for_pages(num_pages);
+    if (order >= MAX_ORDER) {
+        return 0;  /* request larger than the largest block: refuse,
+                    * never hand back a silently-truncated block */
+    }
     return buddy_alloc(order);
 }
 
-/**
- * Free multiple contiguous pages
- */
-void buddy_free_pages(void *addr, uint32_t num_pages) {
-    if (!addr || num_pages == 0) {
-        return;
+int buddy_free_pages(void *addr, uint32_t num_pages) {
+    if (num_pages == 0) {
+        return -1;
     }
-    
-    uint32_t order = buddy_get_order(num_pages * PAGE_SIZE);
-    buddy_free(addr, order);
+    uint32_t order = order_for_pages(num_pages);
+    if (order >= MAX_ORDER) {
+        return -1;
+    }
+    return buddy_free(addr, order);
 }
 
-/**
- * Get order for given size
- */
 uint32_t buddy_get_order(uint32_t size) {
+    if (size <= PAGE_SIZE) {
+        return 0;
+    }
     uint32_t order = 0;
-    uint32_t block_size = PAGE_SIZE;
-    
-    while (block_size < size && order < MAX_ORDER - 1) {
-        block_size <<= 1;
+    uint32_t block = PAGE_SIZE;
+    while (order < MAX_ORDER && block < size) {
+        block <<= 1;
         order++;
     }
-    
-    return order;
+    return order;  /* MAX_ORDER (invalid) when size > largest block */
+}
+
+/* ---- introspection ------------------------------------------------------- */
+
+int buddy_owns(const void *addr) {
+    uintptr_t a = (uintptr_t)addr;
+    return buddy_ready && a >= region_start && a < region_end;
+}
+
+int buddy_addr_is_managed(uint32_t addr) {
+    if (!buddy_ready || addr < region_start || addr >= region_end) {
+        return 0;
+    }
+    uint32_t idx = (addr - region_start) / PAGE_SIZE;
+    return page_desc[idx].state != BP_RESERVED;
+}
+
+uint32_t buddy_get_managed_pages(void) {
+    return buddy_ready ? managed_pages : 0;
+}
+
+uint32_t buddy_get_free_page_count(void) {
+    return buddy_ready ? free_pages_now : 0;
+}
+
+uint32_t buddy_free_blocks_of_order(uint32_t order) {
+    if (!buddy_ready || order >= MAX_ORDER) {
+        return 0;
+    }
+    return free_blocks[order];
+}
+
+void buddy_get_region(uint32_t *start_addr, uint32_t *end_addr) {
+    if (start_addr) {
+        *start_addr = buddy_ready ? region_start : 0;
+    }
+    if (end_addr) {
+        *end_addr = buddy_ready ? region_end : 0;
+    }
 }

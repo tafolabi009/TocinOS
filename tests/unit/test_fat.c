@@ -261,10 +261,8 @@ TEST_SUITE(fat_tests)
         memset(entries, 0, sizeof(entries));
         int n = fat_list_dir("/", entries, 16);
 
-        // The volume label and the deleted entry are skipped; only the
-        // two real files remain. (The label is skipped because fat.c
-        // masks attributes with FAT_ATTR_LONG_NAME (0x0F) - see the
-        // bug note in this milestone's report.)
+        // The volume label (explicit FAT_ATTR_VOLUME_ID skip) and the
+        // deleted entry are skipped; only the two real files remain.
         ASSERT_EQ(n, 2, "Two real files listed");
         ASSERT_EQ(memcmp(entries[0].name, "TEST    TXT", 11), 0,
                   "First entry is TEST.TXT in 8.3 form");
@@ -275,6 +273,71 @@ TEST_SUITE(fat_tests)
 
         ASSERT_EQ(fat_list_dir("/", entries, 1), 1, "max_entries is honoured");
         ASSERT_EQ(fat_list_dir("/", 0, 16), -1, "NULL output array rejected");
+    END_TEST_CASE()
+
+    // READ_ONLY/HIDDEN/SYSTEM files are real files: fat_open must find
+    // them and fat_list_dir must list them; only true LFN slots
+    // ((attr & 0x3F) == 0x0F) are skipped. Regression for roadmap bug #4:
+    // the driver tested `attr & FAT_ATTR_LONG_NAME` (0x0F), which is
+    // truthy for ANY of the R/H/S/V bits and hid such files entirely.
+    TEST_CASE(attribute_flags_do_not_hide_files)
+        ASSERT_EQ(mount_fresh_volume(), 0, "Volume mounts");
+
+        static const char ro_data[]  = "read-only";
+        static const char hid_data[] = "hidden";
+        static const char sys_data[] = "system";
+        ASSERT_EQ(fatdisk_add_file_attr("LOCKED.TXT", ro_data, 9,
+                                        FAT_ATTR_READ_ONLY), 0,
+                  "READ_ONLY file injected");
+        ASSERT_EQ(fatdisk_add_file_attr("GHOST.TXT", hid_data, 6,
+                                        FAT_ATTR_HIDDEN), 0,
+                  "HIDDEN file injected");
+        ASSERT_EQ(fatdisk_add_file_attr("DRIVER.SYS", sys_data, 6,
+                                        FAT_ATTR_SYSTEM | FAT_ATTR_HIDDEN), 0,
+                  "SYSTEM|HIDDEN file injected");
+        ASSERT_EQ(fatdisk_add_lfn_entry(), 0, "Synthetic LFN slot injected");
+
+        fat_file_t f;
+        memset(&f, 0, sizeof(f));
+        ASSERT_EQ(fat_open("LOCKED.TXT", &f), 0, "READ_ONLY file opens");
+        ASSERT_EQ(f.attributes, FAT_ATTR_READ_ONLY, "R attribute preserved");
+        char buf[16];
+        ASSERT_EQ(fat_read(&f, buf, sizeof(buf)), 9, "READ_ONLY file reads");
+        ASSERT_EQ(memcmp(buf, ro_data, 9), 0, "READ_ONLY content matches");
+        fat_close(&f);
+
+        memset(&f, 0, sizeof(f));
+        ASSERT_EQ(fat_open("GHOST.TXT", &f), 0, "HIDDEN file opens");
+        ASSERT_EQ(f.attributes, FAT_ATTR_HIDDEN, "H attribute preserved");
+        fat_close(&f);
+
+        memset(&f, 0, sizeof(f));
+        ASSERT_EQ(fat_open("DRIVER.SYS", &f), 0, "SYSTEM|HIDDEN file opens");
+        ASSERT_EQ(f.attributes, FAT_ATTR_SYSTEM | FAT_ATTR_HIDDEN,
+                  "S|H attributes preserved");
+        fat_close(&f);
+
+        // Listing: TEST.TXT + HELLO.ELF + the three attribute-flagged
+        // files. The volume label and the LFN slot must NOT appear.
+        fat_dir_entry_t entries[16];
+        memset(entries, 0, sizeof(entries));
+        int n = fat_list_dir("/", entries, 16);
+        ASSERT_EQ(n, 5, "Five real files listed; label and LFN skipped");
+
+        int saw_ro = 0, saw_hid = 0, saw_sys = 0, saw_label = 0, saw_lfn = 0;
+        for (int i = 0; i < n; i++) {
+            if (memcmp(entries[i].name, "LOCKED  TXT", 11) == 0) saw_ro = 1;
+            if (memcmp(entries[i].name, "GHOST   TXT", 11) == 0) saw_hid = 1;
+            if (memcmp(entries[i].name, "DRIVER  SYS", 11) == 0) saw_sys = 1;
+            if (entries[i].attributes & FAT_ATTR_VOLUME_ID) saw_label = 1;
+            if ((entries[i].attributes & FAT_ATTR_LFN_MASK)
+                    == FAT_ATTR_LONG_NAME) saw_lfn = 1;
+        }
+        ASSERT_EQ(saw_ro, 1, "READ_ONLY file listed");
+        ASSERT_EQ(saw_hid, 1, "HIDDEN file listed");
+        ASSERT_EQ(saw_sys, 1, "SYSTEM file listed");
+        ASSERT_EQ(saw_label, 0, "Volume label not listed");
+        ASSERT_EQ(saw_lfn, 0, "LFN slot not listed");
     END_TEST_CASE()
 
     // Sector I/O round-trips through the driver; fat_write is documented off

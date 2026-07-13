@@ -105,4 +105,78 @@ TEST_SUITE(vmm_tests)
                   "Returned frame is page aligned");
     END_TEST_CASE()
 
+    // Roadmap bug #7: vmm_map_range/vmm_unmap_range/vmm_is_mapped/
+    // vmm_get_page_flags were declared in memory.h but never implemented.
+    TEST_CASE(range_functions)
+        ASSERT_EQ(kmem_env_reset(), 0, "Host memory windows must map");
+        pmm_init();
+
+        ASSERT_EQ(vmm_map_range(0x40000000u, 0x00600000u, 3 * 0x1000u,
+                                PAGE_WRITE | PAGE_USER), 0,
+                  "map_range succeeds");
+        for (unsigned int i = 0; i < 3; i++) {
+            unsigned int va = 0x40000000u + i * 0x1000u;
+            ASSERT_EQ(vmm_is_mapped(va), 1, "each page reports mapped");
+            ASSERT_EQ(vmm_get_physical(va), 0x00600000u + i * 0x1000u,
+                      "each page translates to its frame");
+        }
+        ASSERT_EQ(vmm_is_mapped(0x40003000u), 0, "page past the range unmapped");
+
+        int fl = vmm_get_page_flags(0x40000000u);
+        ASSERT_NE(fl, -1, "flags readable for a mapped page");
+        ASSERT_NE(fl & PAGE_PRESENT, 0, "present bit reported");
+        ASSERT_NE(fl & PAGE_WRITE, 0, "write bit reported");
+        ASSERT_NE(fl & PAGE_USER, 0, "user bit reported");
+        ASSERT_EQ(vmm_get_page_flags(0x50000000u), -1,
+                  "flags of an unmapped page report -1");
+
+        // Misaligned / empty arguments are rejected
+        ASSERT_EQ(vmm_map_range(0x40000123u, 0x00600000u, 0x1000u, 0), -1,
+                  "misaligned virtual start rejected");
+        ASSERT_EQ(vmm_map_range(0x40000000u, 0x00600123u, 0x1000u, 0), -1,
+                  "misaligned physical start rejected");
+        ASSERT_EQ(vmm_map_range(0x40000000u, 0x00600000u, 0, 0), -1,
+                  "zero size rejected");
+        ASSERT_EQ(vmm_unmap_range(0x40000123u, 0x1000u), -1,
+                  "misaligned unmap rejected");
+
+        ASSERT_EQ(vmm_unmap_range(0x40000000u, 3 * 0x1000u), 0,
+                  "unmap_range succeeds");
+        for (unsigned int i = 0; i < 3; i++) {
+            ASSERT_EQ(vmm_is_mapped(0x40000000u + i * 0x1000u), 0,
+                      "unmap_range removed every page");
+        }
+    END_TEST_CASE()
+
+    // vmm_mark_cow downgrades to read-only + PAGE_COW; set_page_flags
+    // can restore write access
+    TEST_CASE(cow_marking)
+        ASSERT_EQ(kmem_env_reset(), 0, "Host memory windows must map");
+        pmm_init();
+
+        ASSERT_EQ(vmm_mark_cow(0x40000000u), -1,
+                  "marking an unmapped page fails");
+
+        vmm_map_page(0x40000000u, 0x00345000u, PAGE_WRITE | PAGE_USER);
+        ASSERT_EQ(vmm_mark_cow(0x40000000u), 0, "marking a mapped page works");
+
+        int fl = vmm_get_page_flags(0x40000000u);
+        ASSERT_EQ(fl & PAGE_WRITE, 0, "write bit cleared");
+        ASSERT_NE(fl & PAGE_COW, 0, "COW bit set");
+        ASSERT_NE(fl & PAGE_USER, 0, "user bit preserved");
+        ASSERT_EQ(vmm_get_physical(0x40000000u), 0x00345000u,
+                  "frame preserved across the mark");
+
+        ASSERT_EQ(vmm_mark_cow(0x40000000u), 0, "re-marking is idempotent");
+
+        ASSERT_EQ(vmm_set_page_flags(0x40000000u,
+                                     PAGE_PRESENT | PAGE_WRITE | PAGE_USER),
+                  0, "set_page_flags succeeds");
+        fl = vmm_get_page_flags(0x40000000u);
+        ASSERT_NE(fl & PAGE_WRITE, 0, "write restored");
+        ASSERT_EQ(fl & PAGE_COW, 0, "COW cleared");
+        ASSERT_EQ(vmm_set_page_flags(0x50000000u, PAGE_PRESENT), -1,
+                  "set_page_flags on an unmapped page fails");
+    END_TEST_CASE()
+
 END_TEST_SUITE()

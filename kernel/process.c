@@ -17,6 +17,8 @@ static uint32_t next_pid = 1;
 static process_t *current_process = 0;
 static process_t *init_process = 0;
 
+extern void serial_printf(const char *fmt, ...);
+
 // String functions (no libc)
 static int str_copy(char *dest, const char *src, int max) {
     int i = 0;
@@ -59,8 +61,20 @@ void process_init(void) {
         init_process->ppid = 0;
         init_process->state = PROC_RUNNING;
         current_process = init_process;
+
+        // M2: give init a memory descriptor over the LIVE boot address
+        // space (its pages are in the boot directory, so the fresh
+        // directory mm_create() made is swapped for the current one).
+        // current_mm is what the #PF resolver and mmap operate on.
+        init_process->mm = mm_create();
+        if (init_process->mm) {
+            mm_adopt_current_directory(init_process->mm);
+            init_process->page_directory = init_process->mm->page_directory;
+            current_mm = init_process->mm;
+            serial_printf("[MM] init mm attached (boot directory adopted)\n");
+        }
     }
-    
+
     kernel_print("    Process management initialized\n");
 }
 
@@ -243,18 +257,24 @@ int32_t process_fork(void) {
     }
     child->kernel_stack += 0x1000;
     
-    // Copy page directory (COW - Copy on Write would be ideal)
-    // For now, just create a new one and copy mappings
-    child->page_directory = pmm_alloc_page();
-    if (!child->page_directory) {
-        pmm_free_page(child->kernel_stack - 0x1000);
-        free_process(child);
-        return -1;
+    // COW clone of the address space (M2): the child gets its own page
+    // directory and page tables, but SHARES the parent's frames — private
+    // writable pages are downgraded to read-only + PAGE_COW on both sides
+    // and frame refcounts are bumped (mm_clone in kernel/mm/vma.c). The
+    // first write on either side breaks the share in the #PF path.
+    if (current_process->mm) {
+        child->mm = mm_clone(current_process->mm);
+        if (!child->mm) {
+            pmm_free_page(child->kernel_stack - 0x1000);
+            free_process(child);
+            return -1;
+        }
+        child->page_directory = child->mm->page_directory;
+    } else {
+        child->mm = 0;
+        child->page_directory = 0;
     }
-    
-    // TODO: Actually copy the page directory and implement COW
-    // For now, just identity-map like parent
-    
+
     // Copy memory layout
     child->heap_start = current_process->heap_start;
     child->heap_end = current_process->heap_end;
@@ -378,11 +398,18 @@ int32_t process_wait(int32_t pid, int *status, int options) {
             if (c->kernel_stack) {
                 pmm_free_page(c->kernel_stack - 0x1000);
             }
-            if (c->page_directory) {
+            if (c->mm) {
+                // Drops shared-frame refcounts, frees frames whose last
+                // reference went away, and frees the child's page tables
+                // and directory (mm/vma.c).
+                mm_release(c->mm);
+                c->mm = 0;
+                c->page_directory = 0;
+            } else if (c->page_directory) {
                 pmm_free_page(c->page_directory);
             }
             free_process(c);
-            
+
             return child_pid;
         }
     }
@@ -665,7 +692,11 @@ void process_reap_zombies(void) {
                 if (proc->kernel_stack) {
                     pmm_free_page(proc->kernel_stack - 0x1000);
                 }
-                if (proc->page_directory) {
+                if (proc->mm) {
+                    mm_release(proc->mm);
+                    proc->mm = 0;
+                    proc->page_directory = 0;
+                } else if (proc->page_directory) {
                     pmm_free_page(proc->page_directory);
                 }
                 free_process(proc);

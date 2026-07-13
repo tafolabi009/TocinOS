@@ -22,6 +22,11 @@
 #define FAT_ATTR_DIRECTORY  0x10
 #define FAT_ATTR_ARCHIVE    0x20
 #define FAT_ATTR_LONG_NAME  0x0F
+// LFN detection must compare the six attribute bits exactly: an entry is
+// a long-filename slot iff (attr & FAT_ATTR_LFN_MASK) == FAT_ATTR_LONG_NAME.
+// Testing `attr & FAT_ATTR_LONG_NAME` is truthy for ANY of the R/H/S/V
+// bits and hides READ_ONLY/HIDDEN/SYSTEM files (roadmap bug #4).
+#define FAT_ATTR_LFN_MASK   0x3F
 
 // FAT boot sector (common fields)
 typedef struct {
