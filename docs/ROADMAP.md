@@ -189,6 +189,9 @@ in CI. Order encodes hard dependencies.
 | 3 | `enqueue_task` inserts at list head, so same-priority round-robin never rotates (LIFO re-pick, starvation risk) | **M3** |
 | 4 | `fat.c` masks attributes with `& FAT_ATTR_LONG_NAME` (0x0F), hiding any READ_ONLY/HIDDEN/SYSTEM file — should be `(attr & 0x3F) == 0x0F` | **M4** (small; may fix earlier) |
 | 5 | `task_exit` discards its exit code; a blocked sole task stays `rq->current` when nothing else is runnable | **M3** |
+| 6 | `pmm_set_page_used` double-increments `used_pages` when the page is already set | **M2** |
+| 7 | `vmm_map_range`/`vmm_unmap_range`/`vmm_is_mapped`/`vmm_get_page_flags` declared in memory.h but implemented nowhere (link error if ever called) | **M2** |
+| 8 | PMM's fixed 2MB low reservation is smaller than the real kernel footprint (BSS ends ~3.4MB); mitigated with a [2MB, 3.5MB) reserve in kernel_main — proper fix is an `_end` symbol in linker_x86.ld | **M2** |
 
 #### Dead-code triage (wired or deleted — decision per item)
 
