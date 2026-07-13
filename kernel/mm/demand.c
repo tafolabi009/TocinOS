@@ -1,14 +1,23 @@
 /**
- * TocinOS Demand Paging Implementation
- * 
- * Handles page faults for demand-paged virtual memory:
- * - Anonymous pages (zero-filled on first access)
- * - File-backed pages (loaded from page cache)
- * - Copy-on-Write pages (duplicated on write)
- * - Stack growth
- * - Swap-in of swapped pages
- * 
- * @author TocinOS Team
+ * TocinOS Demand Paging (M2 rewrite)
+ *
+ * Page-fault-driven anonymous paging + COW resolution.
+ *
+ * Audit notes on the original AI-generated version of this file: it
+ * hardcoded the page directory at 0x9C000, wired swap-in into the fault
+ * path (out of M2 scope), "resolved" COW faults by always copying while
+ * leaking the old frame (refcounts were a TODO), and answered every
+ * unresolved user fault with cli;hlt — killing the machine instead of
+ * the task. It was rewritten around a host-testable resolver core.
+ *
+ * Layering:
+ *   mm_resolve_fault()  — pure resolution logic on an mm_struct; no CR2,
+ *                         no inline asm; compiled into the host unit
+ *                         tests (tests/unit/test_demand.c).
+ *   page_fault_isr()    — thin i386-only glue: reads CR2, calls the
+ *                         resolver for current_mm, kills the faulting
+ *                         user task via the spawn-exit path on failure,
+ *                         panics with a register dump for kernel faults.
  */
 
 #include "../../include/kernel/memory.h"
@@ -17,422 +26,191 @@
 
 extern void serial_printf(const char *fmt, ...);
 
-/* NULL definition */
 #ifndef NULL
 #define NULL ((void *)0)
 #endif
 
-/* Forward declarations */
-vma_t* vma_find_nearest(mm_struct_t *mm, uint32_t addr);
-
-/* Current process's memory descriptor */
+/* Memory descriptor of the currently running process. Set by
+ * process_init() once the init process exists; NULL before that (any
+ * fault then is a kernel bug and panics). */
 mm_struct_t *current_mm = NULL;
 
-/* Page fault statistics */
+/* Cumulative fault statistics. */
 static struct {
     uint32_t total_faults;
-    uint32_t minor_faults;    /* Fault resolved without disk I/O */
-    uint32_t major_faults;    /* Fault required disk I/O */
-    uint32_t cow_faults;      /* Copy-on-write faults */
-    uint32_t segfaults;       /* Segmentation violations */
-} pf_stats = {0};
+    uint32_t minor_faults;    /* resolved without I/O (demand-zero) */
+    uint32_t major_faults;    /* resolved with I/O (none in M2 scope) */
+    uint32_t cow_faults;      /* COW breaks (copy or in-place flip) */
+    uint32_t segfaults;       /* unresolvable accesses */
+} pf_stats = {0, 0, 0, 0, 0};
 
-// ==================== PAGE TABLE HELPERS ====================
+// ==================== FRAME HELPERS ====================
+/* User frames come from the PMM window [0, 16MB), identity-mapped at
+ * boot (and MAP_FIXED-mapped by the host test harness), so frames are
+ * written through their physical address. */
 
-/**
- * Get page table entry for a virtual address
- */
-static uint32_t* get_pte(uint32_t virt_addr) {
-    uint32_t dir_idx = virt_addr >> 22;
-    uint32_t table_idx = (virt_addr >> 12) & 0x3FF;
-    
-    uint32_t *pd = (uint32_t *)0x9C000;  /* Kernel page directory */
-    
-    if (!(pd[dir_idx] & PAGE_PRESENT)) {
-        return NULL;
-    }
-    
-    uint32_t *pt = (uint32_t *)(pd[dir_idx] & ~0xFFF);
-    return &pt[table_idx];
-}
-
-/**
- * Allocate and map a new page for demand paging
- */
-static int alloc_and_map_page(uint32_t virt_addr, uint32_t flags) {
-    /* Allocate physical page */
-    uint32_t phys = pmm_alloc_page();
-    if (!phys) {
-        serial_printf("[DEMAND] Out of memory for 0x%x\n", virt_addr);
-        return -1;
-    }
-    
-    /* Zero the page */
-    uint32_t *page = (uint32_t *)phys;
+static void zero_frame(uint32_t phys) {
+    uint32_t *p = (uint32_t *)phys;
     for (int i = 0; i < 1024; i++) {
-        page[i] = 0;
+        p[i] = 0;
     }
-    
-    /* Map the page */
-    uint32_t page_flags = PAGE_PRESENT | PAGE_USER;
-    if (flags & VM_WRITE) page_flags |= PAGE_WRITE;
-    
-    vmm_map_page(virt_addr & ~0xFFF, phys, page_flags);
-    
-    /* Update RSS */
-    if (current_mm) {
-        current_mm->rss++;
-    }
-    
-    return 0;
 }
 
-// ==================== DEMAND PAGING HANDLERS ====================
-
-/**
- * Handle anonymous page fault (heap, stack, anonymous mmap)
- */
-int demand_page_anon(vma_t *vma, uint32_t fault_addr) {
-    uint32_t page_addr = fault_addr & ~0xFFF;
-    
-    serial_printf("[DEMAND] Anonymous page at 0x%x\n", page_addr);
-    
-    if (alloc_and_map_page(page_addr, vma->vm_flags) < 0) {
-        return -1;
-    }
-    
-    pf_stats.minor_faults++;
-    return 0;
-}
-
-/**
- * Handle file-backed page fault
- */
-int demand_page_file(vma_t *vma, uint32_t fault_addr) {
-    uint32_t page_addr = fault_addr & ~0xFFF;
-    uint32_t vma_offset = page_addr - vma->vm_start;
-    uint32_t file_offset = vma->vm_file_offset + vma_offset;
-    uint32_t file_page = file_offset / PAGE_SIZE;
-    
-    serial_printf("[DEMAND] File page at 0x%x, inode=%d, offset=%d\n",
-                  page_addr, vma->vm_file_inode, file_page);
-    
-    /* Check page cache first */
-    vmm_page_cache_entry_t *cached = vmm_page_cache_lookup(vma->vm_file_inode, file_page);
-    
-    if (cached) {
-        /* Page is in cache - just map it */
-        uint32_t page_flags = PAGE_PRESENT | PAGE_USER;
-        
-        if (vma->vm_flags & VM_SHARED) {
-            /* Shared mapping - map the cached page directly */
-            if (vma->vm_flags & VM_WRITE) page_flags |= PAGE_WRITE;
-            vmm_map_page(page_addr, cached->phys_addr, page_flags);
-            cached->ref_count++;
-        } else {
-            /* Private mapping - copy on first access if writable */
-            if (vma->vm_flags & VM_WRITE) {
-                /* Map read-only initially, COW on write */
-                vmm_map_page(page_addr, cached->phys_addr, page_flags | PAGE_COW);
-            } else {
-                vmm_map_page(page_addr, cached->phys_addr, page_flags);
-            }
-            cached->ref_count++;
-        }
-        
-        pf_stats.minor_faults++;
-        return 0;
-    }
-    
-    /* Page not in cache - need to read from disk */
-    uint32_t phys = pmm_alloc_page();
-    if (!phys) {
-        serial_printf("[DEMAND] Out of memory for file page\n");
-        return -1;
-    }
-    
-    /* Read page from file */
-    /* TODO: Implement actual file read via VFS */
-    /* For now, just zero-fill as placeholder */
-    uint32_t *page = (uint32_t *)phys;
-    for (int i = 0; i < 1024; i++) {
-        page[i] = 0;
-    }
-    
-    /* Insert into page cache */
-    vmm_page_cache_entry_t *entry = vmm_page_cache_insert(vma->vm_file_inode, file_page, phys);
-    if (entry) {
-        entry->uptodate = 1;
-    }
-    
-    /* Map the page */
-    uint32_t page_flags = PAGE_PRESENT | PAGE_USER;
-    if ((vma->vm_flags & VM_SHARED) && (vma->vm_flags & VM_WRITE)) {
-        page_flags |= PAGE_WRITE;
-    } else if (vma->vm_flags & VM_WRITE) {
-        page_flags |= PAGE_COW;  /* COW for private writable */
-    }
-    vmm_map_page(page_addr, phys, page_flags);
-    
-    if (current_mm) current_mm->rss++;
-    pf_stats.major_faults++;
-    
-    return 0;
-}
-
-/**
- * Handle Copy-on-Write page fault
- */
-int handle_cow_fault(uint32_t fault_addr, uint32_t pte) {
-    uint32_t page_addr = fault_addr & ~0xFFF;
-    uint32_t old_phys = pte & ~0xFFF;
-    
-    serial_printf("[COW] Fault at 0x%x, old_phys=0x%x\n", page_addr, old_phys);
-    
-    /* Allocate new page */
-    uint32_t new_phys = pmm_alloc_page();
-    if (!new_phys) {
-        serial_printf("[COW] Out of memory!\n");
-        return -1;
-    }
-    
-    /* Copy page contents */
-    uint32_t *src = (uint32_t *)old_phys;
-    uint32_t *dst = (uint32_t *)new_phys;
+static void copy_frame(uint32_t dst_phys, uint32_t src_phys) {
+    uint32_t *dst = (uint32_t *)dst_phys;
+    const uint32_t *src = (const uint32_t *)src_phys;
     for (int i = 0; i < 1024; i++) {
         dst[i] = src[i];
     }
-    
-    /* Remap with write permission */
-    vmm_map_page(page_addr, new_phys, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-    
-    /* Decrement old page reference count */
-    /* TODO: Track page reference counts properly */
-    
-    /* Update stats */
-    if (current_mm) current_mm->rss++;
-    pf_stats.cow_faults++;
-    
-    serial_printf("[COW] Copied page to 0x%x\n", new_phys);
-    return 0;
 }
 
-/**
- * Handle stack growth
- */
-static int handle_stack_growth(mm_struct_t *mm, vma_t *vma, uint32_t fault_addr) {
-    uint32_t page_addr = fault_addr & ~0xFFF;
-    
-    /* Stack grows down - check if fault is just below current stack VMA */
-    if (fault_addr < vma->vm_start && 
-        fault_addr >= vma->vm_start - PAGE_SIZE) {
-        
-        /* Extend stack VMA downward */
-        vma->vm_start -= PAGE_SIZE;
-        mm->stack_start = vma->vm_start;
-        
-        serial_printf("[STACK] Growing stack to 0x%x\n", vma->vm_start);
-        
-        /* Allocate the new stack page */
-        return alloc_and_map_page(page_addr, vma->vm_flags);
-    }
-    
-    return -1;  /* Not a valid stack growth */
-}
+// ==================== RESOLUTION CORE ====================
 
 /**
- * Handle swap-in
+ * Demand-zero: first touch of an anonymous page. Allocate a frame from
+ * the PMM (user frames stay in the bitmap window per the allocator
+ * ownership split), zero it, map it with the VMA's protections.
  */
-static int handle_swap_in(uint32_t fault_addr, uint32_t pte) {
-    uint32_t page_addr = fault_addr & ~0xFFF;
-    uint32_t swap_slot = pte >> PTE_SWAP_SLOT_SHIFT;
-    
-    serial_printf("[SWAP] Swapping in page at 0x%x from slot %d\n", 
-                  page_addr, swap_slot);
-    
-    /* Allocate new page */
+static pf_result_t demand_zero(mm_struct_t *mm, vma_t *vma, uint32_t page) {
     uint32_t phys = pmm_alloc_page();
     if (!phys) {
-        /* Try to evict some pages first */
-        vmm_page_cache_evict(4);
-        phys = pmm_alloc_page();
-        if (!phys) {
-            serial_printf("[SWAP] Out of memory during swap-in!\n");
-            return -1;
-        }
-    }
-    
-    /* Read from swap */
-    if (swap_in_page(page_addr, pte) < 0) {
-        pmm_free_page(phys);
-        return -1;
-    }
-    
-    /* Free swap slot */
-    swap_free_slot(swap_slot);
-    
-    /* Map the page */
-    vmm_map_page(page_addr, phys, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-    
-    if (current_mm) current_mm->rss++;
-    pf_stats.major_faults++;
-    
-    return 0;
-}
-
-// ==================== MAIN PAGE FAULT HANDLER ====================
-
-/**
- * Enhanced page fault handler
- * 
- * Called from the ISR when a page fault occurs (interrupt 14)
- */
-pf_result_t handle_page_fault(uint32_t fault_addr, uint32_t error_code) {
-    pf_stats.total_faults++;
-    
-    serial_printf("[PF] Fault at 0x%x, error=0x%x (P=%d W=%d U=%d)\n",
-                  fault_addr, error_code,
-                  (error_code & PF_PRESENT) ? 1 : 0,
-                  (error_code & PF_WRITE) ? 1 : 0,
-                  (error_code & PF_USER) ? 1 : 0);
-    
-    /* Get PTE for faulting address */
-    uint32_t *pte_ptr = get_pte(fault_addr);
-    uint32_t pte = pte_ptr ? *pte_ptr : 0;
-    
-    /* Check if this is a swapped page */
-    if (pte_ptr && (pte & PTE_SWAPPED) && !(pte & PAGE_PRESENT)) {
-        return (handle_swap_in(fault_addr, pte) == 0) ? PF_HANDLED : PF_SWAP_ERROR;
-    }
-    
-    /* Check if this is a COW fault */
-    if ((error_code & PF_PRESENT) && (error_code & PF_WRITE) && (pte & PAGE_COW)) {
-        return (handle_cow_fault(fault_addr, pte) == 0) ? PF_HANDLED : PF_OOM;
-    }
-    
-    /* Get current mm and find VMA */
-    if (!current_mm) {
-        /* Kernel page fault - this is bad */
-        if (!(error_code & PF_USER)) {
-            serial_printf("[PF] Kernel page fault at 0x%x!\n", fault_addr);
-            return PF_SIGSEGV;
-        }
-        pf_stats.segfaults++;
-        return PF_SIGSEGV;
-    }
-    
-    vma_t *vma = vma_find(current_mm, fault_addr);
-    
-    if (!vma) {
-        /* Check for stack growth */
-        vma = vma_find_nearest(current_mm, fault_addr);
-        if (vma && (vma->vm_flags & VM_STACK)) {
-            if (handle_stack_growth(current_mm, vma, fault_addr) == 0) {
-                return PF_HANDLED;
-            }
-        }
-        
-        /* Address not in any VMA - segfault */
-        serial_printf("[PF] No VMA for address 0x%x\n", fault_addr);
-        pf_stats.segfaults++;
-        return PF_SIGSEGV;
-    }
-    
-    /* Check permissions */
-    if ((error_code & PF_WRITE) && !(vma->vm_flags & VM_WRITE)) {
-        serial_printf("[PF] Write to read-only VMA at 0x%x\n", fault_addr);
-        pf_stats.segfaults++;
-        return PF_SIGSEGV;
-    }
-    
-    if ((error_code & PF_USER) && !(vma->vm_flags & (VM_READ | VM_WRITE | VM_EXEC))) {
-        serial_printf("[PF] Access to protected VMA at 0x%x\n", fault_addr);
-        pf_stats.segfaults++;
-        return PF_SIGSEGV;
-    }
-    
-    /* Handle demand paging based on VMA type */
-    int result;
-    
-    if (vma->vm_flags & VM_ANONYMOUS) {
-        result = demand_page_anon(vma, fault_addr);
-    } else if (vma->vm_flags & VM_FILE) {
-        result = demand_page_file(vma, fault_addr);
-    } else {
-        /* Default to anonymous */
-        result = demand_page_anon(vma, fault_addr);
-    }
-    
-    if (result < 0) {
         return PF_OOM;
     }
-    
+    zero_frame(phys);
+
+    uint32_t fl = PAGE_USER;
+    if (vma->vm_flags & VM_WRITE) {
+        fl |= PAGE_WRITE;
+    }
+    if (vmm_dir_map_page(mm->page_directory, page, phys, fl) < 0) {
+        pmm_free_page(phys);
+        return PF_OOM;
+    }
+    frame_ref_set(phys, 1);
+
+    mm->rss++;
+    pf_stats.minor_faults++;
     return PF_HANDLED;
 }
 
-// ==================== ISR INTEGRATION ====================
-
 /**
- * Page fault ISR handler wrapper
- * Called from isr_handler when interrupt 14 occurs
+ * COW break: write hit a present read-only PAGE_COW entry.
+ *  - refcount > 1: allocate a private copy, map it writable, drop one
+ *    reference on the shared frame;
+ *  - refcount <= 1: last owner — flip the entry writable in place.
  */
-static void page_fault_isr(registers_t *regs) {
-    uint32_t fault_addr;
-    __asm__ volatile("mov %%cr2, %0" : "=r"(fault_addr));
-    
-    pf_result_t result = handle_page_fault(fault_addr, regs->err_code);
-    
-    switch (result) {
-        case PF_HANDLED:
-            /* Fault handled, return to faulting instruction */
-            return;
-            
-        case PF_SIGSEGV:
-            serial_printf("[PF] SIGSEGV: Segmentation fault at 0x%x, EIP=0x%x\n",
-                          fault_addr, regs->eip);
-            /* TODO: Send SIGSEGV to process */
-            /* For now, just halt */
-            __asm__ volatile("cli; hlt");
-            break;
-            
-        case PF_SIGBUS:
-            serial_printf("[PF] SIGBUS: Bus error at 0x%x\n", fault_addr);
-            __asm__ volatile("cli; hlt");
-            break;
-            
-        case PF_OOM:
-            serial_printf("[PF] OOM: Out of memory at 0x%x\n", fault_addr);
-            /* TODO: Try to reclaim memory, kill process if needed */
-            __asm__ volatile("cli; hlt");
-            break;
-            
-        case PF_SWAP_ERROR:
-            serial_printf("[PF] Swap error at 0x%x\n", fault_addr);
-            __asm__ volatile("cli; hlt");
-            break;
+static pf_result_t resolve_cow(mm_struct_t *mm, uint32_t page, uint32_t pte) {
+    uint32_t old_phys = pte & ~0xFFFu;
+    uint32_t keep = pte & (uint32_t)PAGE_USER;
+
+    if (frame_ref_get(old_phys) > 1) {
+        uint32_t new_phys = pmm_alloc_page();
+        if (!new_phys) {
+            return PF_OOM;
+        }
+        copy_frame(new_phys, old_phys);
+        if (vmm_dir_map_page(mm->page_directory, page, new_phys,
+                             keep | PAGE_WRITE) < 0) {
+            pmm_free_page(new_phys);
+            return PF_OOM;
+        }
+        frame_ref_set(new_phys, 1);
+        frame_ref_drop(old_phys);  /* >1 before, so never reaches 0 here */
+        /* rss unchanged: the page was already resident for this mm. */
+    } else {
+        /* Sole owner: make it writable in place, clear PAGE_COW. */
+        if (vmm_dir_map_page(mm->page_directory, page, old_phys,
+                             keep | PAGE_WRITE) < 0) {
+            return PF_OOM;
+        }
+        frame_ref_set(old_phys, 1);  /* now tracked, single owner */
     }
+
+    pf_stats.cow_faults++;
+    return PF_HANDLED;
 }
 
 /**
- * Initialize demand paging
+ * Core page-fault resolution — see memory.h for the contract. Operates
+ * on mm->page_directory through the explicit-directory VMM API, so the
+ * ISR glue stays a five-line wrapper and the whole path runs host-side.
  */
-void demand_paging_init(void) {
-    /* Register page fault handler */
-    isr_register_handler(14, page_fault_isr);
-    
-    /* Initialize page cache */
-    vmm_page_cache_init();
-    
-    /* Initialize swap */
-    swap_init();
-    
-    serial_printf("[DEMAND] Demand paging initialized\n");
+pf_result_t mm_resolve_fault(mm_struct_t *mm, uint32_t fault_addr,
+                             uint32_t error_code) {
+    pf_stats.total_faults++;
+
+    if (!mm) {
+        pf_stats.segfaults++;
+        return PF_SIGSEGV;
+    }
+    if (error_code & PF_RESERVED) {
+        pf_stats.segfaults++;
+        return PF_SIGSEGV;  /* corrupt PTE — never auto-fixable */
+    }
+
+    uint32_t page = fault_addr & ~0xFFFu;
+
+    vma_t *vma = vma_find(mm, fault_addr);
+    if (!vma) {
+        pf_stats.segfaults++;
+        return PF_SIGSEGV;
+    }
+
+    if ((error_code & PF_WRITE) && !(vma->vm_flags & VM_WRITE)) {
+        pf_stats.segfaults++;
+        return PF_SIGSEGV;  /* write to read-only mapping */
+    }
+    if ((error_code & PF_USER) &&
+        !(vma->vm_flags & (VM_READ | VM_WRITE | VM_EXEC))) {
+        pf_stats.segfaults++;
+        return PF_SIGSEGV;  /* PROT_NONE region */
+    }
+
+    uint32_t pte = vmm_dir_get_pte(mm->page_directory, page);
+
+    if ((error_code & PF_PRESENT) && (pte & PAGE_PRESENT)) {
+        /* Protection-level fault on a present page. */
+        if (error_code & PF_WRITE) {
+            if (pte & PAGE_COW) {
+                return resolve_cow(mm, page, pte);
+            }
+            if (!(pte & PAGE_WRITE)) {
+                /* VMA allows writes but the PTE is RO without COW
+                 * (e.g. after mprotect upgrade): make it writable. */
+                uint32_t fl = (pte & 0xFFFu) | PAGE_WRITE;
+                vmm_dir_map_page(mm->page_directory, page,
+                                 pte & ~0xFFFu, fl);
+                return PF_HANDLED;
+            }
+            return PF_HANDLED;  /* stale TLB — already writable */
+        }
+        if ((error_code & PF_USER) && !(pte & PAGE_USER)) {
+            pf_stats.segfaults++;
+            return PF_SIGSEGV;  /* user touch of a supervisor page */
+        }
+        return PF_HANDLED;  /* stale TLB read */
+    }
+
+    /* Not-present fault inside a valid VMA. */
+    if (pte & PAGE_PRESENT) {
+        /* Error code says not-present but the PTE is live: stale TLB or
+         * a lost race — never demand-zero over an existing frame. */
+        return PF_HANDLED;
+    }
+    if (vma->vm_flags & VM_FILE) {
+        /* File paging needs the page cache — deliberately not wired in
+         * M2's anonymous scope (sys_mmap refuses fd-backed maps). */
+        pf_stats.segfaults++;
+        return PF_SIGBUS;
+    }
+
+    return demand_zero(mm, vma, page);
 }
 
 /**
- * Get page fault statistics
+ * Get page fault statistics.
  */
-void demand_paging_stats(uint32_t *total, uint32_t *minor, uint32_t *major, 
+void demand_paging_stats(uint32_t *total, uint32_t *minor, uint32_t *major,
                          uint32_t *cow, uint32_t *segv) {
     if (total) *total = pf_stats.total_faults;
     if (minor) *minor = pf_stats.minor_faults;
@@ -441,17 +219,77 @@ void demand_paging_stats(uint32_t *total, uint32_t *minor, uint32_t *major,
     if (segv)  *segv  = pf_stats.segfaults;
 }
 
-// ==================== EXTERNAL DECLARATIONS ====================
-// These functions are implemented in other mm files
+/** Host tests: reset counters between cases. */
+void demand_paging_stats_reset(void) {
+    pf_stats.total_faults = 0;
+    pf_stats.minor_faults = 0;
+    pf_stats.major_faults = 0;
+    pf_stats.cow_faults = 0;
+    pf_stats.segfaults = 0;
+}
 
-/* VMA management - from vma.c */
-extern vma_t* vma_find_nearest(mm_struct_t *mm, uint32_t addr);
+// ==================== ISR GLUE (i386 only) ====================
 
-/* Page cache - from page_cache.c */
-extern vmm_page_cache_entry_t* vmm_page_cache_lookup(uint32_t inode, uint32_t offset);
-extern vmm_page_cache_entry_t* vmm_page_cache_insert(uint32_t inode, uint32_t offset, uint32_t phys);
-extern void vmm_page_cache_evict(uint32_t num_pages);
+#ifdef __i386__
 
-/* Swap - from swap.c */
-extern int swap_in_page(uint32_t virt_addr, uint32_t pte);
-extern void swap_free_slot(uint32_t slot);
+extern int sys_exit(uint32_t code);
+
+/**
+ * #PF (vector 14) handler. CR2 is 32 bits wide on i386 — this glue is
+ * compiled only for __i386__, so reading it into a uint32_t is exact
+ * (the old code's CR2-into-uint32_t was only a latent x86-64 hazard).
+ */
+static void page_fault_isr(registers_t *regs) {
+    uint32_t fault_addr;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(fault_addr));
+
+    pf_result_t result = mm_resolve_fault(current_mm, fault_addr,
+                                          regs->err_code);
+    if (result == PF_HANDLED) {
+        return;
+    }
+
+    int user_mode = ((regs->cs & 3) == 3) || (regs->err_code & PF_USER);
+
+    serial_printf("[PF] UNRESOLVED fault addr=0x%x err=0x%x "
+                  "(P=%d W=%d U=%d) EIP=0x%x result=%d\n",
+                  fault_addr, regs->err_code,
+                  (regs->err_code & PF_PRESENT) ? 1 : 0,
+                  (regs->err_code & PF_WRITE) ? 1 : 0,
+                  (regs->err_code & PF_USER) ? 1 : 0,
+                  regs->eip, (int)result);
+
+    if (user_mode) {
+        /* Kill only the faulting user task: exit code 139 = SIGSEGV.
+         * sys_exit() unwinds to the spawn return context (the same path
+         * every user program exits through today). */
+        serial_printf("[PF] SIGSEGV: killing user task (exit 139)\n");
+        sys_exit(139);
+        /* sys_exit returns only when no spawn context exists. */
+    }
+
+    /* Kernel fault (or unkillable task): panic with a clear dump. */
+    serial_printf("[PF] KERNEL PANIC: unhandled page fault in kernel context\n");
+    serial_printf("[PF]  EAX=0x%x EBX=0x%x ECX=0x%x EDX=0x%x\n",
+                  regs->eax, regs->ebx, regs->ecx, regs->edx);
+    serial_printf("[PF]  ESI=0x%x EDI=0x%x EBP=0x%x ESP=0x%x\n",
+                  regs->esi, regs->edi, regs->ebp, regs->esp);
+    serial_printf("[PF]  EIP=0x%x CS=0x%x EFLAGS=0x%x CR2=0x%x\n",
+                  regs->eip, regs->cs, regs->eflags, fault_addr);
+    kernel_print("\n*** KERNEL PAGE FAULT - system halted ***\n");
+    for (;;) {
+        __asm__ volatile("cli; hlt");
+    }
+}
+
+/**
+ * Arm demand paging: frame refcount table + #PF vector. Swap and the
+ * VMM page cache are deliberately NOT initialized (dormant in M2).
+ */
+void demand_paging_init(void) {
+    frame_ref_init();
+    isr_register_handler(14, page_fault_isr);
+    serial_printf("[MM] demand paging armed (#PF -> VMA fault resolver)\n");
+}
+
+#endif /* __i386__ */

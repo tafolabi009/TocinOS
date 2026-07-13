@@ -6,9 +6,10 @@
  * compiled directly into the test runner - no mocks.
  *
  * Host environment:
- *   - Task stacks come from the REAL PMM (kernel/mm/pmm.c). The PMM
- *     only does bitmap bookkeeping, so the unmapped "physical" stack
- *     addresses are never dereferenced here.
+ *   - Task stacks come from the REAL buddy allocator (kernel/mm/buddy.c),
+ *     which only does descriptor-table bookkeeping, so the unmapped
+ *     "physical" stack addresses are never dereferenced here. The REAL
+ *     PMM (kernel/mm/pmm.c) is also linked and re-initialized per test.
  *   - timer_get_ticks()/kernel_print() are host stubs
  *     (tests/framework/sched_stubs.c); the fake clock is driven
  *     explicitly by each test.
@@ -35,9 +36,12 @@ static void dummy_entry(void) {
     /* never executed on the host - tasks are never context-switched */
 }
 
-/* Re-initialize PMM + scheduler + fake clock before each test. */
+/* Re-initialize PMM + buddy + scheduler + fake clock before each test.
+ * The buddy allocator backs task stacks (contiguous stack_size-byte
+ * blocks); re-initializing it also reclaims stacks from prior tests. */
 static void sched_fresh(void) {
     pmm_init();
+    buddy_init(BUDDY_REGION_START, BUDDY_FALLBACK_END);
     scheduler_init();
     test_timer_set_ticks(0);
 }
@@ -74,8 +78,11 @@ TEST_SUITE(scheduler_tests)
         ASSERT_EQ(task_get_affinity(t0, &mask), 0, "Affinity readable");
         ASSERT_EQ(mask, CPU_MASK_ALL, "Default affinity is all CPUs");
 
-        // Each task consumed one physical page for its stack
-        ASSERT_EQ(pmm_get_used_pages(), 512u + 3u, "3 stack pages allocated");
+        // Each task consumed a full 16 KiB (4-page) stack from the buddy;
+        // the PMM's single-page pool is not used for stacks anymore.
+        ASSERT_EQ(pmm_get_used_pages(), 512u, "PMM untouched by task stacks");
+        ASSERT_EQ(buddy_get_free_page_count(), buddy_get_managed_pages() - 12u,
+                  "3 stacks x 4 pages allocated from the buddy");
     END_TEST_CASE()
 
     // The pool holds exactly MAX_TASKS (256) tasks
@@ -110,10 +117,12 @@ TEST_SUITE(scheduler_tests)
         ASSERT_EQ(task_get_current()->state, TASK_RUNNING, "Picked task is RUNNING");
 
         // Block the only task: nothing else is runnable (no idle task on
-        // host), so scheduler_schedule() leaves rq->current pointing at
-        // the blocked task - documented current behaviour.
+        // host), so the CPU goes idle. rq->current must NOT keep pointing
+        // at the blocked task (roadmap bug #5, fixed).
         task_block(7);
-        ASSERT_EQ(task_get_current()->state, TASK_BLOCKED, "Task is BLOCKED");
+        ASSERT_EQ(task_get_current_id(), -1, "No current task while blocked");
+        ASSERT_TRUE(task_get_current() == 0, "CPU idles with a NULL current");
+        ASSERT_EQ(task_get_by_id(a)->state, TASK_BLOCKED, "Task is BLOCKED");
 
         task_unblock(a);
         task_yield();
@@ -204,12 +213,12 @@ TEST_SUITE(scheduler_tests)
         ASSERT_EQ(after.total_preemptions - before.total_preemptions, 1u,
                   "Global preemption counter advanced");
 
-        // Note (kernel quirk, not fixed here): enqueue_task() inserts at
-        // the head of the priority list, so the preempted task is
-        // immediately re-picked and same-priority round-robin never
-        // rotates to the other ready task.
-        ASSERT_EQ(task_get_current_id(), first,
-                  "LIFO ready-list keeps the same task running");
+        // Regression (roadmap bug #3): enqueue_task() used to insert at
+        // the list HEAD, so the preempted task was immediately re-picked
+        // and the other same-priority task starved. With FIFO tail-append
+        // the slice expiry hands the CPU to the peer.
+        ASSERT_NE(task_get_current_id(), first,
+                  "Slice expiry rotates to the other same-priority task");
     END_TEST_CASE()
 
     // task_sleep parks a task until the tick clock passes sleep_until
@@ -240,7 +249,7 @@ TEST_SUITE(scheduler_tests)
         ASSERT_EQ(task_get_priority(b), 120, "Untouched task keeps its priority");
     END_TEST_CASE()
 
-    // task_exit releases the slot and its stack page; IDs are reused
+    // task_exit leaves a readable zombie; task_reap releases slot + stack
     TEST_CASE(exit_and_id_reuse)
         sched_fresh();
 
@@ -249,12 +258,20 @@ TEST_SUITE(scheduler_tests)
         scheduler_start();
         ASSERT_EQ(task_get_current_id(), a, "Doomed task is running");
 
-        unsigned int free_before = pmm_get_free_pages();
-        task_exit(0);
+        uint32_t free_before = buddy_get_free_page_count();
+        task_exit(7);
         ASSERT_EQ(task_get_current_id(), b, "Survivor scheduled after exit");
-        ASSERT_EQ(pmm_get_free_pages(), free_before + 1,
-                  "Exited task's stack page returned to the PMM");
-        ASSERT_EQ(task_get_priority(a), -1, "Exited task ID no longer valid");
+        ASSERT_EQ(task_get_by_id(a)->state, TASK_ZOMBIE,
+                  "Exited task stays a zombie until reaped");
+        ASSERT_EQ(buddy_get_free_page_count(), free_before,
+                  "Zombie keeps its stack until reaped");
+
+        int code = -1;
+        ASSERT_EQ(task_reap(a, &code), 0, "Zombie reaps cleanly");
+        ASSERT_EQ(code, 7, "Reap hands back the exit code");
+        ASSERT_EQ(buddy_get_free_page_count(), free_before + 4u,
+                  "Reap returns the 4 stack pages to the buddy");
+        ASSERT_EQ(task_get_priority(a), -1, "Reaped task ID no longer valid");
 
         int c = task_create(dummy_entry, "recycled", SCHED_NORMAL, 130);
         ASSERT_EQ(c, a, "Freed task ID is reused");
@@ -301,11 +318,9 @@ TEST_SUITE(scheduler_tests)
         task_yield();
         ASSERT_EQ(task_get_current_id(), a, "Boosted task wins the CPU");
 
-        // Deboost while 'a' is RUNNING (i.e. not sitting in a ready
-        // list). Deboosting a READY task is avoided on purpose:
-        // task_pi_deboost() restores the priority WITHOUT requeueing,
-        // which desynchronises the task from the list it is linked
-        // into - kernel bug reported with this milestone, not fixed.
+        // Deboost while 'a' is RUNNING (not sitting in a ready list).
+        // The READY-task deboost path (roadmap bug #2, fixed) has its own
+        // regression test: pi_deboost_requeues_ready_task.
         task_pi_deboost(a);
         ASSERT_EQ(task_get_priority(a), 120, "Deboost restores static priority");
         task_yield();
@@ -337,6 +352,167 @@ TEST_SUITE(scheduler_tests)
 
         scheduler_balance_load();      /* single CPU: must be a clean no-op */
         ASSERT_EQ(task_get_priority(a), 120, "Load balancing left the task alone");
+    END_TEST_CASE()
+
+    // Regression (roadmap bug #1): the stack top must lie within the
+    // allocated stack region. task_create_ex used to allocate ONE 4 KiB
+    // PMM page while pointing esp stack_size (16 KiB) bytes above it.
+    TEST_CASE(stack_top_within_allocation)
+        sched_fresh();
+
+        uint32_t managed = buddy_get_managed_pages();
+
+        int t = task_create(dummy_entry, "deft", SCHED_NORMAL, 120);
+        task_t *task = task_get_by_id(t);
+        ASSERT_TRUE(task != 0, "Task visible via task_get_by_id");
+        ASSERT_EQ(task->stack_size, 16384u, "Default stack is 16 KiB");
+        ASSERT_EQ(buddy_get_free_page_count(), managed - 4u,
+                  "16 KiB (4 pages) really allocated for the stack");
+        ASSERT_EQ(buddy_owns((void *)(long)task->stack_base), 1,
+                  "Stack comes from the buddy region");
+        ASSERT_EQ(task->esp, task->stack_base + task->stack_size,
+                  "esp starts at the top of the stack");
+        ASSERT_TRUE(task->esp > task->stack_base &&
+                    task->esp <= task->stack_base + task->stack_size,
+                    "Stack top lies within the allocated region");
+        ASSERT_EQ(task->ebp, task->esp, "ebp starts at the stack top");
+
+        // Odd sizes round UP to the next power-of-two block, and
+        // stack_size reflects what was really allocated
+        int t2 = task_create_ex(dummy_entry, "odd", SCHED_NORMAL, 120,
+                                CPU_MASK_ALL, 5000);
+        task_t *task2 = task_get_by_id(t2);
+        ASSERT_EQ(task2->stack_size, 8192u, "5000 B request rounds to 8 KiB");
+        ASSERT_EQ(buddy_get_free_page_count(), managed - 4u - 2u,
+                  "Two more pages allocated for the 8 KiB stack");
+        ASSERT_EQ(task2->esp, task2->stack_base + task2->stack_size,
+                  "esp matches the rounded allocation");
+
+        // Tiny requests are clamped to one page
+        int t3 = task_create_ex(dummy_entry, "tiny", SCHED_NORMAL, 120,
+                                CPU_MASK_ALL, 64);
+        task_t *task3 = task_get_by_id(t3);
+        ASSERT_EQ(task3->stack_size, 4096u, "Minimum stack is one page");
+        ASSERT_EQ(task3->esp, task3->stack_base + 4096u,
+                  "esp sits at the top of the single page");
+    END_TEST_CASE()
+
+    // Regression (roadmap bug #2): deboosting a READY task must requeue
+    // it. The old code rewrote the priority in place, so the task stayed
+    // linked in the OLD priority's list while claiming the new priority -
+    // scheduling then picked the wrong task and corrupted list heads.
+    TEST_CASE(pi_deboost_requeues_ready_task)
+        sched_fresh();
+
+        int a = task_create(dummy_entry, "holder", SCHED_NORMAL, 120);
+        int b = task_create(dummy_entry, "waiter", SCHED_NORMAL, 110);
+        scheduler_start();
+        ASSERT_EQ(task_get_current_id(), b, "Higher-priority task runs");
+
+        task_pi_boost(a, 100);         /* a is READY: moves to list 100 */
+        ASSERT_EQ(task_get_priority(a), 100, "Boost applied to READY task");
+        task_pi_deboost(a);            /* still READY: must move back */
+        ASSERT_EQ(task_get_priority(a), 120, "Deboost restores static prio");
+
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), b,
+                  "Deboosted task no longer outranks the runner");
+
+        task_block(1);                 /* b blocks: a must be schedulable */
+        ASSERT_EQ(task_get_current_id(), a,
+                  "Deboosted task reachable through its 120 ready list");
+
+        task_unblock(b);
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), b, "Ready lists stayed consistent");
+    END_TEST_CASE()
+
+    // Regression (roadmap bug #3): two same-priority tasks must alternate
+    // across successive schedules (FIFO tail-append), instead of the
+    // head-inserted LIFO re-pick that starved every peer.
+    TEST_CASE(same_priority_round_robin)
+        sched_fresh();
+
+        int a = task_create(dummy_entry, "ping", SCHED_NORMAL, 120);
+        int b = task_create(dummy_entry, "pong", SCHED_NORMAL, 120);
+        scheduler_start();
+        ASSERT_EQ(task_get_current_id(), a, "FIFO: first-created runs first");
+
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), b, "Yield rotates to the peer");
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), a, "Rotation comes back around");
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), b, "Rotation is stable");
+
+        // A third same-priority task joins at the TAIL of the rotation
+        int c = task_create(dummy_entry, "pang", SCHED_NORMAL, 120);
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), a, "Earlier arrivals drain first");
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), c, "Newcomer gets its turn");
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), b, "Three-way rotation holds");
+    END_TEST_CASE()
+
+    // Regression (roadmap bug #5): task_exit must store the exit code and
+    // keep it readable while the task is a zombie; task_reap returns it.
+    TEST_CASE(exit_code_readable_until_reap)
+        sched_fresh();
+
+        int a = task_create(dummy_entry, "coder", SCHED_NORMAL, 100);
+        int b = task_create(dummy_entry, "other", SCHED_NORMAL, 120);
+        scheduler_start();
+        ASSERT_EQ(task_get_current_id(), a, "Exiting task is current");
+
+        int code = 0;
+        ASSERT_EQ(task_get_exit_code(a, &code), -1,
+                  "No exit code while the task is alive");
+
+        task_exit(-42);
+        ASSERT_EQ(task_get_current_id(), b, "CPU moved on after exit");
+        ASSERT_EQ(task_get_exit_code(a, &code), 0, "Zombie exposes exit code");
+        ASSERT_EQ(code, -42, "Stored code matches task_exit argument");
+
+        code = 0;
+        ASSERT_EQ(task_get_exit_code(a, &code), 0, "Code stays readable");
+        ASSERT_EQ(code, -42, "Value unchanged on re-read");
+
+        ASSERT_EQ(task_reap(b, &code), -1, "Running task cannot be reaped");
+        ASSERT_EQ(task_reap(a, &code), 0, "Zombie reaps");
+        ASSERT_EQ(code, -42, "Reap hands back the exit code");
+        ASSERT_EQ(task_get_exit_code(a, &code), -1,
+                  "Reaped slot no longer readable");
+        ASSERT_EQ(task_reap(a, &code), -1, "Double reap rejected");
+    END_TEST_CASE()
+
+    // Regression (roadmap bug #5): when the sole runnable task blocks or
+    // exits, the CPU must go idle (current = NULL) instead of leaving the
+    // non-runnable task installed as rq->current.
+    TEST_CASE(blocked_sole_task_idles_cpu)
+        sched_fresh();
+
+        int a = task_create(dummy_entry, "loner", SCHED_NORMAL, 120);
+        scheduler_start();
+        ASSERT_EQ(task_get_current_id(), a, "Sole task runs");
+
+        task_block(3);
+        ASSERT_EQ(task_get_current_id(), -1, "CPU idles: no current task");
+        ASSERT_EQ(task_get_by_id(a)->state, TASK_BLOCKED, "Task is blocked");
+        ASSERT_EQ(task_get_by_id(a)->blocked_on, 3, "Blocked on resource 3");
+
+        scheduler_tick();              /* ticking an idle CPU is a no-op */
+        ASSERT_EQ(task_get_current_id(), -1, "Idle survives a tick");
+
+        task_unblock(a);
+        task_yield();
+        ASSERT_EQ(task_get_current_id(), a, "Unblocked task runs again");
+        ASSERT_EQ(task_get_by_id(a)->state, TASK_RUNNING, "Back to RUNNING");
+
+        // Exit the sole task: the same nothing-runnable path via a zombie
+        task_exit(0);
+        ASSERT_EQ(task_get_current_id(), -1, "CPU idles after sole exit");
+        ASSERT_EQ(task_get_by_id(a)->state, TASK_ZOMBIE, "Task is a zombie");
     END_TEST_CASE()
 
 END_TEST_SUITE()

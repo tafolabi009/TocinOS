@@ -57,6 +57,8 @@ typedef struct process {
     
     // Memory management
     uint32_t page_directory;   // Physical address of page directory
+    struct mm_struct *mm;      // VMA list + page tables (kernel/mm/vma.c);
+                               // NULL for kernel processes without one
     uint32_t heap_start;       // Start of heap
     uint32_t heap_end;         // Current end of heap (brk)
     uint32_t stack_top;        // Top of user stack

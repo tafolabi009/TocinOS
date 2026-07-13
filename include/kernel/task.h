@@ -157,7 +157,8 @@ typedef struct task {
 typedef struct {
     task_t *current;           // Currently running task
     task_t *idle_task;         // Idle task for this CPU
-    task_t *ready_lists[140];  // Priority-based ready lists (0-139)
+    task_t *ready_lists[140];  // Priority-based ready lists (0-139), heads
+    task_t *ready_tails[140];  // Tails of the ready lists (O(1) FIFO append)
     uint32_t nr_running;       // Number of running tasks
     uint64_t load_weight;      // CPU load weight
     uint64_t last_balance;     // Last load balance time
@@ -186,6 +187,14 @@ void task_exit(int exit_code);
 void task_yield(void);
 int task_get_current_id(void);
 task_t* task_get_current(void);
+task_t* task_get_by_id(int task_id);
+
+// Zombie collection. task_exit() stores the exit code and leaves the task
+// as a readable ZOMBIE; task_get_exit_code() reads the code while the
+// zombie exists; task_reap() releases the stack and the task ID (the
+// primitive a blocking wait()/waitpid() builds on -- that layer is M3).
+int task_get_exit_code(int task_id, int *exit_code);
+int task_reap(int task_id, int *exit_code);
 
 // Task state management
 void task_block(int resource_id);

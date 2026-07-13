@@ -168,7 +168,8 @@ int fatdisk_format_mbr(void) {
     return 0;
 }
 
-int fatdisk_add_file(const char *name, const void *data, uint32_t size) {
+int fatdisk_add_file_attr(const char *name, const void *data, uint32_t size,
+                          uint8_t attributes) {
     if (!next_free_cluster || !name || (!data && size)) {
         return -1;
     }
@@ -197,10 +198,36 @@ int fatdisk_add_file(const char *name, const void *data, uint32_t size) {
     next_free_cluster += clusters;
 
     name_to_83(name, entry->name);
-    entry->attributes = FAT_ATTR_ARCHIVE;
+    entry->attributes = attributes;
     entry->first_cluster_high = 0;
     entry->first_cluster_low = (uint16_t)first;
     entry->file_size = size;
+    return 0;
+}
+
+int fatdisk_add_file(const char *name, const void *data, uint32_t size) {
+    return fatdisk_add_file_attr(name, data, size, FAT_ATTR_ARCHIVE);
+}
+
+int fatdisk_add_lfn_entry(void) {
+    if (!next_free_cluster) {
+        return -1;
+    }
+    fat_dir_entry_t *entry = find_free_root_slot();
+    if (!entry) {
+        return -1;
+    }
+
+    /* Minimal last-in-sequence LFN slot: sequence byte 0x41, a few fake
+     * UCS-2 name characters, attributes 0x0F. The driver must skip it
+     * purely on (attr & 0x3F) == 0x0F. */
+    memset(entry, 0, sizeof(*entry));
+    entry->name[0] = 0x41;             /* sequence 1 | last-entry flag */
+    entry->name[1] = 'l';              /* 'l' 'o' 'n' 'g' in UCS-2 */
+    entry->name[3] = 'o';
+    entry->name[5] = 'n';
+    entry->name[7] = 'g';
+    entry->attributes = FAT_ATTR_LONG_NAME;
     return 0;
 }
 

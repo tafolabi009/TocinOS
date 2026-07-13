@@ -53,6 +53,21 @@ int fatdisk_format_mbr(void);
  */
 int fatdisk_add_file(const char *name, const void *data, uint32_t size);
 
+/*
+ * Same as fatdisk_add_file() but with an explicit attribute byte, e.g.
+ * FAT_ATTR_READ_ONLY, FAT_ATTR_HIDDEN or FAT_ATTR_SYSTEM combinations.
+ * fatdisk_add_file() is this with FAT_ATTR_ARCHIVE.
+ */
+int fatdisk_add_file_attr(const char *name, const void *data, uint32_t size,
+                          uint8_t attributes);
+
+/*
+ * Add a synthetic long-filename slot (attributes 0x0F) to the root
+ * directory. Only the attribute byte matters to the driver's LFN skip
+ * logic; the rest of the entry mimics a last-in-sequence LFN record.
+ */
+int fatdisk_add_lfn_entry(void);
+
 /* Add a volume-label entry (attribute 0x08) to the root directory. */
 int fatdisk_add_volume_label(const char *label);
 

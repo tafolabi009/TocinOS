@@ -337,14 +337,34 @@ int vmm_is_mapped(uint32_t virt_addr);
 int vmm_get_page_flags(uint32_t virt_addr);
 int vmm_set_page_flags(uint32_t virt_addr, uint32_t flags);
 
-// Page directory management
-uint32_t vmm_create_address_space(void);
-void vmm_destroy_address_space(uint32_t directory_phys);
-uint32_t vmm_clone_address_space(uint32_t source_dir);
+/*
+ * Explicit-directory API (M2): operate on a page directory given by its
+ * physical address, so the VMA/COW layer can build fork children without
+ * switching CR3. Directories and tables always come from the PMM window
+ * [0, 16MB), identity-mapped at boot (and in the host test harness), so
+ * physical addresses are directly dereferenceable.
+ */
+uint32_t vmm_dir_get_pte(uint32_t dir_phys, uint32_t virt);
+int  vmm_dir_map_page(uint32_t dir_phys, uint32_t virt, uint32_t phys, uint32_t flags);
+void vmm_dir_unmap_page(uint32_t dir_phys, uint32_t virt);
+int  vmm_dir_mark_cow(uint32_t dir_phys, uint32_t virt);
 
-// Copy-on-Write support
+// Copy-on-Write support: mark a present PTE read-only + PAGE_COW in the
+// current directory. Write faults are resolved by mm_resolve_fault().
 int vmm_mark_cow(uint32_t virt_addr);
-int vmm_handle_cow_fault(uint32_t virt_addr);
+
+// ==================== FRAME REFERENCE COUNTS (COW) ====================
+/*
+ * Shared-frame refcount table covering the PMM window [0, 128MB)
+ * (kernel/mm/framerefs.c). Count 0 = untracked frame with one implicit
+ * owner: frame_ref_share() promotes it to 2, frame_ref_drop() returns 0
+ * (free it). Frames outside the window are never droppable.
+ */
+void     frame_ref_init(void);
+uint32_t frame_ref_get(uint32_t phys_addr);
+void     frame_ref_set(uint32_t phys_addr, uint32_t count);
+void     frame_ref_share(uint32_t phys_addr);
+uint32_t frame_ref_drop(uint32_t phys_addr);
 
 // ==================== PAGE FAULT HANDLING ====================
 
@@ -363,10 +383,6 @@ typedef struct {
 #define PF_USER     0x04     // User mode fault (vs kernel mode)
 #define PF_RESERVED 0x08     // Reserved bit violation
 #define PF_FETCH    0x10     // Instruction fetch fault (NX violation)
-
-// Page fault handler registration
-void page_fault_handler(page_fault_info_t *info);
-void page_fault_register_handler(void (*handler)(page_fault_info_t *));
 
 // ==================== VIRTUAL MEMORY AREAS (VMA) ====================
 
@@ -446,12 +462,18 @@ typedef struct mm_struct {
     
     /* Reference count */
     uint32_t  ref_count;        /**< Reference count for mm_struct */
+
+    /* 1 when this mm allocated its own page directory/tables and must
+     * free them on destroy; 0 for the boot mm that adopted the boot
+     * directory (never destroyed). */
+    uint32_t  owns_pd;
 } mm_struct_t;
 
 // VMA management functions
 vma_t* vma_create(uint32_t start, uint32_t end, uint32_t flags);
 void   vma_destroy(vma_t *vma);
 vma_t* vma_find(mm_struct_t *mm, uint32_t addr);
+vma_t* vma_find_nearest(mm_struct_t *mm, uint32_t addr);
 int    vma_insert(mm_struct_t *mm, vma_t *vma);
 int    vma_remove(mm_struct_t *mm, vma_t *vma);
 int    vma_merge(mm_struct_t *mm, vma_t *vma);
@@ -459,8 +481,15 @@ int    vma_merge(mm_struct_t *mm, vma_t *vma);
 // MM struct management
 mm_struct_t* mm_create(void);
 void         mm_destroy(mm_struct_t *mm);
-mm_struct_t* mm_clone(mm_struct_t *src);
+mm_struct_t* mm_clone(mm_struct_t *src);   /* COW clone (fork) */
 void         mm_release(mm_struct_t *mm);
+
+/**
+ * Make mm describe the CURRENTLY ACTIVE address space instead of the
+ * private directory mm_create() allocated (which is freed). Used once at
+ * boot for the init process, whose pages live in the boot directory.
+ */
+void mm_adopt_current_directory(mm_struct_t *mm);
 
 // ==================== MEMORY-MAPPED FILES ====================
 
@@ -594,11 +623,29 @@ typedef enum {
     PF_SWAP_ERROR,              /**< Swap I/O error */
 } pf_result_t;
 
-// Enhanced page fault handling
-pf_result_t handle_page_fault(uint32_t fault_addr, uint32_t error_code);
-int demand_page_file(vma_t *vma, uint32_t fault_addr);
-int demand_page_anon(vma_t *vma, uint32_t fault_addr);
-int handle_cow_fault(uint32_t fault_addr, uint32_t pte);
+/** Memory descriptor of the currently running process (mm/demand.c). */
+extern mm_struct_t *current_mm;
+
+/**
+ * @brief Core page-fault resolution (host-testable, no CR2/ISR glue).
+ *
+ * Resolves a fault at fault_addr in mm's address space:
+ *  - write to a present PAGE_COW entry -> COW break: copy the frame when
+ *    it has >1 reference, otherwise flip it writable in place
+ *  - not-present access inside an anonymous VMA -> demand-zero page
+ *  - not-present access inside a file VMA -> PF_SIGBUS (page cache is
+ *    not wired in M2's anonymous-paging scope)
+ *  - no VMA / permission violation -> PF_SIGSEGV
+ */
+pf_result_t mm_resolve_fault(mm_struct_t *mm, uint32_t fault_addr,
+                             uint32_t error_code);
+
+/** Arm the #PF (vector 14) handler and the frame refcount table. */
+void demand_paging_init(void);
+
+/** Fault counters (all cumulative since boot). Any pointer may be NULL. */
+void demand_paging_stats(uint32_t *total, uint32_t *minor, uint32_t *major,
+                         uint32_t *cow, uint32_t *segv);
 
 // ==================== MEMORY STATISTICS ====================
 

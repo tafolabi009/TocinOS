@@ -55,6 +55,66 @@ static uint32_t boot_identity_tables[BOOT_IDENTITY_TABLES][1024]
     __attribute__((aligned(4096)));
 
 /**
+ * M2 self-verification, run once at boot after process_init(): drives
+ * the REAL page-fault path (not the host-test shortcut) — an anonymous
+ * mmap with no eager frames, a write that demand-zero faults, a COW
+ * fork, a write that COW-copies, and a child reap that releases the
+ * shared frame. Failures only log; boot continues.
+ */
+static void mm_selftest(void) {
+    void *p = sys_mmap((void *)0, 2 * PAGE_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        serial_printf("[MM] selftest FAIL: anonymous mmap\n");
+        return;
+    }
+    if (vmm_is_mapped((uint32_t)p)) {
+        serial_printf("[MM] selftest FAIL: mmap mapped eager frames\n");
+        return;
+    }
+
+    volatile uint32_t *word = (volatile uint32_t *)p;
+    *word = 0x51E1F7E5u;                      /* -> #PF, demand-zero */
+    uint32_t phys_before = vmm_get_physical((uint32_t)p);
+    if (*word != 0x51E1F7E5u || !phys_before) {
+        serial_printf("[MM] selftest FAIL: demand-zero fault\n");
+        return;
+    }
+    serial_printf("[MM] demand paging verified: demand-zero #PF mapped "
+                  "0x%x -> frame 0x%x\n", (uint32_t)p, phys_before);
+
+    int32_t child = process_fork();           /* COW clone */
+    if (child < 0) {
+        serial_printf("[MM] selftest FAIL: fork\n");
+        return;
+    }
+    uint32_t refs_shared = frame_ref_get(phys_before);
+
+    *word = 0xC0FFEE42u;                      /* -> #PF, COW break */
+    uint32_t phys_after = vmm_get_physical((uint32_t)p);
+
+    process_kill((uint32_t)child, 9);
+    int status = 0;
+    process_wait(child, &status, WNOHANG);    /* reap -> drop child refs */
+    uint32_t refs_old_after_reap = frame_ref_get(phys_before);
+
+    sys_munmap(p, 2 * PAGE_SIZE);
+
+    if (refs_shared == 2 && *word == 0xC0FFEE42u &&
+        phys_after && phys_after != phys_before &&
+        refs_old_after_reap == 0) {
+        serial_printf("[MM] COW fork enabled: write copied frame "
+                      "0x%x -> 0x%x (refs 2 -> 1+1), child reap freed "
+                      "the shared frame\n", phys_before, phys_after);
+    } else {
+        serial_printf("[MM] selftest FAIL: COW fork (refs_shared=%u "
+                      "phys 0x%x -> 0x%x refs_after_reap=%u)\n",
+                      refs_shared, phys_before, phys_after,
+                      refs_old_after_reap);
+    }
+}
+
+/**
  * Clear the screen
  */
 void screen_clear(void) {
@@ -159,17 +219,28 @@ void kernel_main(void) {
         pmm_init();
     }
 
-    // Kernel-footprint guard: pmm_init() reserves only [0, 2MB), but the
-    // kernel's BSS now extends past 2MB (the buddy descriptor table and
-    // driver arrays live there; end currently ~3.3MB, no _end symbol is
-    // exported by linker_x86.ld to measure it exactly). Without this,
-    // the very first pmm_alloc_page() would hand out frames overlaying
-    // live kernel data. Reserve a conservative window up to 3.5MB; the
-    // identity-mapped PMM pool continues at [3.5MB, 16MB).
-    #define KERNEL_FOOTPRINT_END 0x380000u  /* 3.5MB, BSS ends ~0x347000 */
-    for (unsigned int pg = (2 * 1024 * 1024) / PAGE_SIZE;
-         pg < KERNEL_FOOTPRINT_END / PAGE_SIZE; pg++) {
-        pmm_set_page_used(pg);
+    // Kernel-footprint guard (roadmap bug #8): pmm_init() reserves only
+    // [0, 2MB), but the kernel image extends past 2MB (buddy descriptor
+    // table, driver arrays, frame refcount table and the 16KB boot stack
+    // all live in BSS). Without this, the very first pmm_alloc_page()
+    // would hand out frames overlaying live kernel data. The reservation
+    // end is now derived from the linker-provided _kernel_end symbol
+    // (linker_x86.ld) instead of the old hardcoded 3.5MB guess, plus a
+    // 64KB guard band, rounded up to a page. pmm_set_page_used() is
+    // idempotent (bug #6 fix), so overlap with bootinfo reservations
+    // keeps the counters exact.
+    {
+        extern char _kernel_end[];  /* linker_x86.ld: end of .bss */
+        uint32_t kernel_end = (uint32_t)(uintptr_t)_kernel_end;
+        uint32_t reserve_end = (kernel_end + 0x10000u + PAGE_SIZE - 1u)
+                               & ~(uint32_t)(PAGE_SIZE - 1u);
+        for (unsigned int pg = (2u * 1024u * 1024u) / PAGE_SIZE;
+             pg < reserve_end / PAGE_SIZE; pg++) {
+            pmm_set_page_used(pg);
+        }
+        serial_printf("[PMM] kernel footprint reserved to 0x%x "
+                      "(_kernel_end=0x%x + 64KB guard)\n",
+                      reserve_end, kernel_end);
     }
 
     // Buddy allocator (M2) — physical ownership split (see memory.h):
@@ -277,6 +348,15 @@ void kernel_main(void) {
     kernel_print("[*] Initializing ISR handlers...\n");
     isr_init();
     serial_printf("[INIT] ISR done\n");
+
+    // Demand paging (M2): arm the #PF vector with the VMA fault
+    // resolver and zero the frame refcount table. From here on,
+    // not-present faults inside anonymous VMAs are demand-zero filled
+    // and write faults on PAGE_COW entries are COW-broken; unresolved
+    // user faults kill only the faulting task. Prints
+    // "[MM] demand paging armed".
+    kernel_print("[*] Arming demand paging (#PF handler)...\n");
+    demand_paging_init();
     
     // Initialize timer (100 Hz)
     serial_printf("[INIT] Timer init...\n");
@@ -309,6 +389,14 @@ void kernel_main(void) {
     // Initialize process management
     kernel_print("[*] Initializing Process Management...\n");
     process_init();
+
+    // M2 in-VM self-verification: exercise the REAL fault path end to
+    // end — demand-zero via an actual #PF, then COW fork + write + child
+    // reap. Runs in ring 0; CR0.WP is set (vmm_switch_directory), so the
+    // COW write genuinely faults. Greppable serial lines:
+    //   "[MM] demand paging verified: ..."
+    //   "[MM] COW fork enabled: ..."
+    mm_selftest();
     
     // Initialize VESA graphics
     kernel_print("[*] Initializing VESA Graphics...\n");

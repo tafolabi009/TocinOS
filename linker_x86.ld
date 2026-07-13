@@ -34,6 +34,12 @@ SECTIONS
         *(.bss)
     }
 
+    /* End of the kernel image in memory (text+rodata+data+bss, including
+     * the 16KB boot stack in entry.asm's BSS). kernel_main derives the
+     * PMM low-memory reservation from this symbol (roadmap bug #8) so the
+     * reserve tracks the real footprint instead of a hardcoded guess. */
+    _kernel_end = .;
+
     /* Discard unnecessary sections */
     /DISCARD/ :
     {
