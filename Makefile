@@ -231,6 +231,14 @@ docs-clean:
 	@echo "Cleaning documentation..."
 	@rm -rf docs/html docs/latex
 
+# TocinBoot UEFI bootloader (see boot/uefi/ and docs/BOOT_PROTOCOL.md)
+.PHONY: uefi run-uefi
+uefi: all
+	$(MAKE) -C boot/uefi img
+
+run-uefi: uefi
+	$(MAKE) -C boot/uefi test
+
 # Run in QEMU
 run: all
 	@echo "Running TocinOS in QEMU..."
@@ -245,6 +253,7 @@ run64: all
 clean:
 	$(msg) "CLEAN" "build artifacts"
 	$(Q)rm -rf $(BUILD_DIR)
+	$(Q)$(MAKE) --no-print-directory -C boot/uefi clean
 
 clean-all: clean docs-clean
 	$(msg) "CLEAN" "all generated files"
