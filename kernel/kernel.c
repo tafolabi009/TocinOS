@@ -28,6 +28,7 @@
 #include "../include/kernel/tmpfs.h"
 #include "../include/drivers/mdf.h"
 #include "../include/drivers/vesa.h"
+#include "../include/drivers/fbcon.h"
 #include "../include/drivers/ide.h"
 #include "../include/drivers/net.h"
 #include "../include/drivers/usb_core.h"
@@ -56,6 +57,14 @@ void screen_clear(void) {
  * Print a string to the screen
  */
 void kernel_print(const char *str) {
+    // Mirror every kernel_print() line (the '[*]' init log included) onto
+    // the framebuffer splash console when it is active. This single hook
+    // is the cheapest way to mirror the boot log; before fbcon_init()
+    // runs, fbcon_active() is 0 and this is a no-op. Serial output is not
+    // routed through here, so serial logs are unaffected.
+    if (fbcon_active()) {
+        fbcon_puts(str);
+    }
     while (*str) {
         if (*str == '\n') {
             vga_x = 0;
@@ -141,7 +150,14 @@ void kernel_main(void) {
     serial_printf("[INIT] VMM init...\n");
     kernel_print("[*] Initializing Virtual Memory Manager...\n");
     vmm_init();
-    
+
+    // Framebuffer splash (M1): needs bootinfo (fb description) AND paging
+    // (fbcon identity-maps the fb MMIO range, which lies above the
+    // identity-mapped low 4MB), so this is the earliest safe point.
+    // No-op on legacy boot paths without a tocinboot framebuffer.
+    fbcon_init();
+
+
     // Initialize task scheduler
     serial_printf("[INIT] Scheduler init...\n");
     kernel_print("[*] Initializing Task Scheduler...\n");

@@ -213,7 +213,7 @@ in CI. Order encodes hard dependencies.
       reservations (`pmm_init_from_bootinfo`, conservative v1 — BOOTLOADER reclaim is M2),
       GOP framebuffer plumbed into the VESA driver; legacy boot paths behave exactly as before
 - [ ] BIOS stage2 produces the same handoff struct
-- [ ] Graphical splash; kernel renders to GOP framebuffer
+- [x] Graphical splash; kernel renders to GOP framebuffer
 - **Accept:** same kernel binary boots via BIOS and UEFI paths in CI
 
 ### M2 — Memory management, for real + 64-bit userspace
