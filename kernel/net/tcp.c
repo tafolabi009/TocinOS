@@ -247,7 +247,7 @@ static int tcp_send_segment(tcp_cb_t *tcb, uint8_t flags,
     tcp->flags = flags;
     tcp->window = htons(tcb->rcv_wnd);
     tcp->checksum = 0;
-    tcp->urgent = 0;
+    tcp->urgent_ptr = 0;
     
     /* Copy data if present */
     if (data && length > 0) {
@@ -296,7 +296,7 @@ static int tcp_send_rst(uint32_t src_ip, uint16_t src_port,
     tcp->flags = TCP_FLAG_RST | TCP_FLAG_ACK;
     tcp->window = 0;
     tcp->checksum = 0;
-    tcp->urgent = 0;
+    tcp->urgent_ptr = 0;
     
     tcp->checksum = tcp_checksum(src_ip, dest_ip, packet, TCP_HEADER_MIN_SIZE);
     

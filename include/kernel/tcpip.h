@@ -124,27 +124,42 @@ int tcpip_send_packet(const void *data, uint16_t length, uint32_t dest_ip);
 // IP layer
 uint16_t ip_checksum(const void *data, uint16_t length);
 int ip_send(uint32_t dest_ip, uint8_t protocol, const void *data, uint16_t length);
+int ip_send_packet(uint32_t dest_ip, uint8_t protocol, const void *data, uint16_t length);
 int ip_receive(const void *packet, uint16_t length);
+uint32_t tcpip_get_local_ip(void);
 
-// TCP layer
-int tcp_open(uint32_t dest_ip, uint16_t dest_port, uint16_t local_port);
-int tcp_close(int sockfd);
-int tcp_send(int sockfd, const void *data, uint16_t length);
-int tcp_receive(int sockfd, void *buffer, uint16_t max_length);
-int tcp_listen(uint16_t port);
-int tcp_accept(int listen_sockfd);
+// TCP layer (kernel/net/tcp.c)
+int tcp_init(void);
+int tcp_socket(void);
+int tcp_bind(int sockfd, uint16_t port);
+int tcp_listen(int sockfd, int backlog);
+int tcp_accept(int sockfd);
+int tcp_connect(int sockfd, uint32_t remote_ip, uint16_t remote_port);
+int tcp_write(int sockfd, const void *data, uint16_t length);
+int tcp_read(int sockfd, void *buffer, uint16_t max_length);
+int tcp_close_socket(int sockfd);
+int tcp_receive(uint32_t src_ip, uint32_t dest_ip, const void *packet, uint16_t length);
 
-// UDP layer
-int udp_open(uint16_t local_port);
+// UDP layer (kernel/net/udp.c)
+int udp_init(void);
+int udp_socket(void);
+int udp_bind(int sockfd, uint16_t port);
+int udp_connect(int sockfd, uint32_t remote_ip, uint16_t remote_port);
+int udp_send(int sockfd, const void *data, uint16_t length);
+int udp_sendto(int sockfd, const void *data, uint16_t length, uint32_t dest_ip, uint16_t dest_port);
+int udp_recv(int sockfd, void *buffer, uint16_t max_length);
+int udp_recvfrom(int sockfd, void *buffer, uint16_t max_length, uint32_t *src_ip, uint16_t *src_port);
 int udp_close(int sockfd);
-int udp_send(int sockfd, uint32_t dest_ip, uint16_t dest_port, const void *data, uint16_t length);
-int udp_receive(int sockfd, void *buffer, uint16_t max_length, uint32_t *src_ip, uint16_t *src_port);
+int udp_receive(uint32_t src_ip, uint32_t dest_ip, const void *packet, uint16_t length);
 
-// ICMP layer
+// ICMP layer (kernel/net/icmp.c)
 int icmp_echo_request(uint32_t dest_ip, uint16_t id, uint16_t seq, const void *data, uint16_t length);
 int icmp_echo_reply(uint32_t dest_ip, uint16_t id, uint16_t seq, const void *data, uint16_t length);
+int icmp_receive(uint32_t src_ip, const void *packet, uint16_t length);
 
-// ARP layer
+// ARP layer (kernel/net/arp.c)
+int arp_init(void);
+void arp_set_ip(uint32_t ip);
 int arp_resolve(uint32_t ip_addr, uint8_t *mac_addr);
 int arp_send_request(uint32_t target_ip);
 int arp_send_reply(uint32_t target_ip, const uint8_t *target_mac);

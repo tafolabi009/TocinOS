@@ -141,6 +141,15 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/%.c
 $(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/usb/%.c
 	$(msg) "CC" "$<"
 	$(Q)$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/net/%.c
+	$(msg) "CC" "$<"
+	$(Q)$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(KERNEL_DIR)/net/%.c
+	$(msg) "CC" "$<"
+	$(Q)$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/%.o: $(KERNEL_DIR)/fs/%.c
 	$(msg) "CC" "$<"
 	$(Q)$(CC) $(CFLAGS) -c $< -o $@
