@@ -177,13 +177,20 @@ $(OS_IMAGE): $(MBR_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
 
 test: test-unit test-integration
 
+# test-unit compiles the REAL kernel sources listed below into a host
+# binary; hardware seams are stubbed in tests/framework/. -I$(KERNEL_DIR)
+# resolves the kernel's relative "../include/..." includes. -DSTDINT_H
+# -include stdint.h force the host <stdint.h> and skip the freestanding
+# include/stdint.h (their 64-bit typedefs conflict on x86-64 hosts).
 test-unit:
 	@echo "Running unit tests..."
 	@if [ -d tests/unit ]; then \
 		mkdir -p $(BUILD_DIR); \
 		$(CC) -O2 -Itests/framework -I$(KERNEL_DIR) -Wno-int-to-pointer-cast \
+			-Wno-pointer-to-int-cast -DSTDINT_H -include stdint.h \
 			tests/test_runner.c tests/unit/*.c tests/framework/*.c \
 			$(KERNEL_DIR)/mm/pmm.c $(KERNEL_DIR)/mm/vmm.c \
+			$(KERNEL_DIR)/task/scheduler.c $(KERNEL_DIR)/fat.c \
 			-o $(BUILD_DIR)/test_runner 2>&1 || \
 		{ echo "Failed to compile tests"; exit 1; }; \
 		$(BUILD_DIR)/test_runner; \

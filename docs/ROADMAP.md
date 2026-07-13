@@ -175,8 +175,20 @@ in CI. Order encodes hard dependencies.
 - [x] Real unit tests for PMM and VMM: `kernel/mm/pmm.c` and `kernel/mm/vmm.c` are
       compiled unmodified into the host test runner (`tests/framework/kmem_env.c`
       maps their fixed physical windows); CI runs `make test-unit`
-- [ ] Real unit tests for scheduler and FAT (still mock-based; needs a host seam for
-      `kernel/task/scheduler.c` and a block-device fake for `kernel/fat.c`)
+- [x] Real unit tests for scheduler and FAT: `kernel/task/scheduler.c` and
+      `kernel/fat.c` compiled unmodified into the runner (fake clock in
+      `sched_stubs.c`; in-memory FAT16 disk formatted in pure C in
+      `fat_fake_disk.c`); all mocks deleted; 32/32 tests green
+
+#### Kernel bugs found by the real test suite (tracked, not yet fixed)
+
+| # | Bug | Fix milestone |
+|---|-----|---------------|
+| 1 | `task_create_ex` allocates one 4 KiB stack page but sets `esp = stack_base + 16 KiB` — stack top points 12 KiB past the frame | **M3** |
+| 2 | `task_pi_deboost` restores priority without requeueing a READY task, desynchronizing ready lists (later `dequeue_task` corrupts the wrong list) | **M3** |
+| 3 | `enqueue_task` inserts at list head, so same-priority round-robin never rotates (LIFO re-pick, starvation risk) | **M3** |
+| 4 | `fat.c` masks attributes with `& FAT_ATTR_LONG_NAME` (0x0F), hiding any READ_ONLY/HIDDEN/SYSTEM file — should be `(attr & 0x3F) == 0x0F` | **M4** (small; may fix earlier) |
+| 5 | `task_exit` discards its exit code; a blocked sole task stays `rq->current` when nothing else is runnable | **M3** |
 
 #### Dead-code triage (wired or deleted — decision per item)
 
