@@ -30,7 +30,11 @@ jobs:
     - name: Build kernel
       run: |
         make ARCH=x86 V=1
-        
+
+    - name: Run unit tests
+      run: |
+        make test-unit
+
     - name: Build user programs
       run: |
         cd user

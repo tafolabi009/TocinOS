@@ -181,8 +181,11 @@ test-unit:
 	@echo "Running unit tests..."
 	@if [ -d tests/unit ]; then \
 		mkdir -p $(BUILD_DIR); \
-		$(CC) -Itests/framework tests/test_runner.c tests/unit/*.c tests/framework/*.c -o $(BUILD_DIR)/test_runner 2>&1 || \
-		(echo "Failed to compile tests" && exit 1); \
+		$(CC) -O2 -Itests/framework -I$(KERNEL_DIR) -Wno-int-to-pointer-cast \
+			tests/test_runner.c tests/unit/*.c tests/framework/*.c \
+			$(KERNEL_DIR)/mm/pmm.c $(KERNEL_DIR)/mm/vmm.c \
+			-o $(BUILD_DIR)/test_runner 2>&1 || \
+		{ echo "Failed to compile tests"; exit 1; }; \
 		$(BUILD_DIR)/test_runner; \
 	else \
 		echo "No unit tests found. Run 'make setup-tests' to create test infrastructure."; \

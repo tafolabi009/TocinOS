@@ -167,10 +167,32 @@ in CI. Order encodes hard dependencies.
 - [x] Build fixed (`kernel/net` + `kernel/drivers/net` compile; duplicate TCP/IP stack
       unified at the IP layer; kernel links; QEMU boots)
 - [ ] CI green on every push; boot smoke test with FAT disk attached
-- [ ] Version truth: kernel banner, README, and `docs/` agree
-- [ ] Dead-code triage: every §1 dormant item gets a milestone tag or is deleted
-- [ ] Real unit tests: compile actual `pmm.c`/`vmm.c`/`scheduler.c` against a test harness
-      (retire the mock-only suite)
+      *(blocked externally: GitHub Actions is not assigning runners for this repo —
+      jobs die in <10 s with no logs; check account billing/Actions settings)*
+- [x] Version truth: kernel banner v2.0 matches README; stale committed binaries
+      (`user/ld.so/ld.so`, `user/libc/libc.so`) removed; `*.so` gitignored
+- [x] Dead-code triage: every §1 dormant item mapped to a milestone (table below)
+- [x] Real unit tests for PMM and VMM: `kernel/mm/pmm.c` and `kernel/mm/vmm.c` are
+      compiled unmodified into the host test runner (`tests/framework/kmem_env.c`
+      maps their fixed physical windows); CI runs `make test-unit`
+- [ ] Real unit tests for scheduler and FAT (still mock-based; needs a host seam for
+      `kernel/task/scheduler.c` and a block-device fake for `kernel/fat.c`)
+
+#### Dead-code triage (wired or deleted — decision per item)
+
+| Dormant item | Decision |
+|---|---|
+| `mm/buddy.c`, `mm/slab.c` | **M2** — become the kernel allocators, or deleted if benchmarks favor a rewrite |
+| `mm/swap.c`, `mm/demand.c`, `mm/page_cache.c`, `mm/vma.c` | **M2** — wire into demand paging/mmap; anything unused after M2 is deleted |
+| `task/cfs.c` vs `task/scheduler.c` | **M3** — benchmark, keep one, delete the other |
+| `task/thread.c` stub clone/TLS | **M3** — replaced by real thread creation |
+| `kernel/tcpip.c` IP layer + `kernel/net/*` | **M8** — single stack; `tcpip.c` socket stubs already deleted (M0) |
+| NIC drivers (`e1000`, `rtl8139`, `virtio_net`) | **M8** — init + RX wiring; unverified ones deleted after virtio/e1000 pass CI |
+| USB `drivers/usb/*` (UHCI-era) | **M4–M5** — superseded by xHCI plan; UHCI deleted unless QEMU tests justify keeping it |
+| `kernel/ext2.c`, `fs/ext4_vfs.c` | **M4** — read-only support retained for tooling; write paths deleted unless tested |
+| `fs/tocinfs.c` placeholder | **M4** — deleted, replaced by spec-first TocinFS v2 |
+| `kernel/fs_cache.c` | **M4** — superseded by the unified page cache |
+| `kaslr`, `ipc`, `profiling`, `boot/uefi/*` (current form) | **M1/M2** — UEFI rewritten as TocinBoot; kaslr/ipc/profiling re-evaluated, wired or deleted |
 
 ### M1 — TocinBoot (custom bootloader)
 - UEFI app boots the kernel on QEMU/OVMF with `tocinboot_info` handoff (memmap, GOP fb, RSDP)

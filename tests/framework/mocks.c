@@ -12,63 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Mock bitmap for page allocation (simplified)
-#define MAX_PAGES 1024
-static uint32_t page_bitmap[MAX_PAGES / 32] = {0};
-static uint32_t next_page = 1;
-
-/**
- * Mock PMM: Allocate a page
- */
-uint32_t pmm_alloc_page(void) {
-    for (uint32_t i = 0; i < MAX_PAGES; i++) {
-        uint32_t word = i / 32;
-        uint32_t bit = i % 32;
-        
-        if (!(page_bitmap[word] & (1 << bit))) {
-            page_bitmap[word] |= (1 << bit);
-            return (i + 1) * 0x1000; // Return physical address
-        }
-    }
-    return 0; // Out of memory
-}
-
-/**
- * Mock PMM: Free a page
- */
-void pmm_free_page(uint32_t addr) {
-    uint32_t page_index = (addr / 0x1000) - 1;
-    if (page_index < MAX_PAGES) {
-        uint32_t word = page_index / 32;
-        uint32_t bit = page_index % 32;
-        page_bitmap[word] &= ~(1 << bit);
-    }
-}
-
-/**
- * Mock PMM: Initialize
- */
-void pmm_init(void) {
-    memset(page_bitmap, 0, sizeof(page_bitmap));
-    next_page = 1;
-}
-
-/**
- * Mock VMM: Map a page
- */
-int vmm_map_page(uint32_t virt, uint32_t phys, uint32_t flags) {
-    (void)virt;
-    (void)phys;
-    (void)flags;
-    return 0; // Success
-}
-
-/**
- * Mock VMM: Unmap a page
- */
-void vmm_unmap_page(uint32_t virt) {
-    (void)virt;
-}
+// NOTE: PMM and VMM are no longer mocked — the real kernel/mm/pmm.c and
+// kernel/mm/vmm.c are compiled into the test runner (see Makefile
+// test-unit and tests/framework/kmem_env.c). The mocks below remain for
+// subsystems that still need a host-side seam (scheduler); replacing
+// them with the real code is tracked in docs/ROADMAP.md milestone M0.
 
 /**
  * Mock scheduler: Simple task structure

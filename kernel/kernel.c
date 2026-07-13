@@ -110,7 +110,7 @@ void kernel_main(void) {
     
     screen_clear();
     
-    kernel_print("TocinOS v1.0\n");
+    kernel_print("TocinOS v2.0\n");
     serial_printf("[KERNEL] VGA cleared, starting init...\n");
     kernel_print("=============\n\n");
     
