@@ -8,6 +8,11 @@
 #      64-bit UEFI -> 32-bit protected-mode handoff worked  (required only
 #      when KERNEL.ELF was staged on the image)
 #
+# The expected kernel banner (check 2) can be overridden for other kernels:
+#   KERNEL_BANNER      — fixed string grepped in the serial log
+#   KERNEL_BANNER_DESC — suffix of the PASS line (default: "32-bit handoff OK")
+# e.g. `make test64` boots the ELF64 M2 stub and expects its 64-bit banner.
+#
 # Exit 0 iff every applicable check passed. Usage: test-ovmf.sh [esp.img]
 
 set -u
@@ -17,6 +22,8 @@ IMG=${1:-$HERE/../../build/uefi/esp.img}
 BUILD=$(dirname "$IMG")
 LOG=$BUILD/serial.log
 TIMEOUT=${TIMEOUT:-25}
+BANNER=${KERNEL_BANNER:-"=== TocinOS Booting ==="}
+BANNER_DESC=${KERNEL_BANNER_DESC:-"32-bit handoff OK"}
 
 [ -f "$IMG" ] || { echo "FAIL: image not found: $IMG (run 'make img')"; exit 1; }
 
@@ -59,8 +66,8 @@ else
 fi
 
 if [ "$HAVE_KERNEL" = 1 ]; then
-    if grep -q "=== TocinOS Booting ===" "$LOG"; then
-        echo "PASS: kernel banner '=== TocinOS Booting ===' — 32-bit handoff OK"
+    if grep -qF "$BANNER" "$LOG"; then
+        echo "PASS: kernel banner '$BANNER' — $BANNER_DESC"
     else
         echo "FAIL: kernel banner missing — handoff did not reach kernel_main (log: $LOG)"
         RC=1

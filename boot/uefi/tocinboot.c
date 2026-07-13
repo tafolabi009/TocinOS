@@ -1,17 +1,18 @@
 /*
- * TocinBoot v0.1 — TocinOS UEFI loader (milestone M1).
+ * TocinBoot v0.1 — TocinOS UEFI loader (milestone M1 + M2 64-bit handoff).
  *
  * Implements the producer side of docs/BOOT_PROTOCOL.md (tocinboot_info v1):
- *   - loads \EFI\TOCINOS\KERNEL.ELF (plain ELF32, ET_EXEC, EM_386) at its
- *     physical p_paddr addresses, optional CMDLINE.TXT / INITRD.IMG;
+ *   - loads \EFI\TOCINOS\KERNEL.ELF (plain ELF32 ET_EXEC/EM_386 or ELF64
+ *     ET_EXEC/EM_X86_64) at its physical p_paddr addresses, optional
+ *     CMDLINE.TXT / INITRD.IMG;
  *   - builds tocinboot_info + a normalized memory map in fresh BOOTLOADER
  *     (EfiLoaderData/Code) pages below 4 GiB;
- *   - exits boot services and drops from long mode to paging-off 32-bit
- *     protected mode via a relocatable trampoline (handoff32.asm), entering
- *     the kernel per spec §6.1 (EAX=magic, EBX=&info, flat GDT, jmp).
- *
- * ELF64 kernels are detected and refused with the documented M2 message
- * (spec §9) — the 64-bit contract is not exercised until the M2 kernel.
+ *   - ELF32: exits boot services and drops from long mode to paging-off
+ *     32-bit protected mode via a relocatable trampoline (handoff32.asm),
+ *     entering the kernel per spec §6.1 (EAX=magic, EBX=&info, flat GDT, jmp);
+ *   - ELF64 (M2): exits boot services and stays in long mode on the
+ *     firmware's identity-mapped page tables (spec §6.3 caveat), entering
+ *     the kernel per spec §6.2 (RAX=magic, RDI=&info, RSP=loader stack, jmp).
  *
  * Build: x86_64-w64-mingw32-gcc as a native PE32+ EFI application; see the
  * Makefile in this directory. Freestanding: no headers beyond efi.h and
@@ -63,7 +64,24 @@ typedef struct {
 #define ELFCLASS64 2
 #define ET_EXEC 2
 #define EM_386 3
+#define EM_X86_64 62
 #define PT_LOAD 1
+
+/* ---- minimal ELF64 (M2: 64-bit long-mode handoff, spec §6.2) ------------- */
+
+typedef struct {
+    UINT8 e_ident[16];
+    UINT16 e_type, e_machine;
+    UINT32 e_version;
+    UINT64 e_entry, e_phoff, e_shoff;
+    UINT32 e_flags;
+    UINT16 e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx;
+} Elf64_Ehdr;
+
+typedef struct {
+    UINT32 p_type, p_flags;
+    UINT64 p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align;
+} Elf64_Phdr;
 
 /* ---- freestanding memcpy/memset (MinGW may emit calls to these) --------- */
 
@@ -508,6 +526,102 @@ static EFI_STATUS elf32_load(const UINT8 *img, UINT64 img_size,
     return EFI_SUCCESS;
 }
 
+/* ---- ELF64 loading (spec §7, M2) -------------------------------------------
+ *
+ * Same contract as elf32_load: every PT_LOAD is placed at its exact p_paddr,
+ * the covering span is claimed with AllocatePages(AllocateAddress), BSS
+ * tails are zero-filled, e_entry is a physical address. TocinBoot v0.1
+ * keeps the whole span below 4 GiB (spec §3.2 keeps everything the kernel
+ * must read below 4 GiB; a higher-half ELF64 kernel is expected to use
+ * physical p_paddr values down here and remap itself).
+ */
+
+static EFI_STATUS elf64_load(const UINT8 *img, UINT64 img_size,
+                             tocinboot_info *bi)
+{
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)img;
+    UINT64 lo = ~0ull, hi = 0;
+    EFI_PHYSICAL_ADDRESS span;
+    UINT16 i;
+    EFI_STATUS st;
+
+    if (img_size < sizeof(Elf64_Ehdr))
+        return fail("ELF64 kernel smaller than its header", 0);
+    if (eh->e_type != ET_EXEC)
+        return fail("kernel is not ET_EXEC", 0);
+    if (eh->e_machine != EM_X86_64)
+        return fail("ELF64 kernel is not EM_X86_64", 0);
+    if (!eh->e_phnum || eh->e_phentsize < sizeof(Elf64_Phdr))
+        return fail("kernel has no usable program headers", 0);
+    if (eh->e_phoff > img_size ||
+        (UINT64)eh->e_phnum * eh->e_phentsize > img_size - eh->e_phoff)
+        return fail("kernel program headers exceed file size", 0);
+
+    /* Pass 1: validate segments, compute the covering physical span. */
+    for (i = 0; i < eh->e_phnum; i++) {
+        const Elf64_Phdr *ph =
+            (const Elf64_Phdr *)(img + eh->e_phoff +
+                                 (UINTN)i * eh->e_phentsize);
+
+        if (ph->p_type != PT_LOAD || !ph->p_memsz)
+            continue;
+        if (ph->p_filesz > ph->p_memsz)
+            return fail("PT_LOAD filesz > memsz", 0);
+        if (ph->p_offset > img_size ||
+            ph->p_filesz > img_size - ph->p_offset)
+            return fail("PT_LOAD data exceeds file size", 0);
+        if (ph->p_memsz > ~0ull - ph->p_paddr)
+            return fail("PT_LOAD wraps physical address space", 0);
+        if (ph->p_paddr < lo)
+            lo = ph->p_paddr;
+        if (ph->p_paddr + ph->p_memsz > hi)
+            hi = ph->p_paddr + ph->p_memsz;
+    }
+    if (hi <= lo)
+        return fail("kernel has no PT_LOAD segments", 0);
+
+    lo &= ~(UINT64)(EFI_PAGE_SIZE - 1);                   /* page-round down */
+    hi = (hi + EFI_PAGE_SIZE - 1) & ~(UINT64)(EFI_PAGE_SIZE - 1); /* round up */
+    if (hi > TB_BELOW_4G + 1)
+        return fail("kernel span crosses 4 GiB", 0);
+
+    /* Claim the whole covering span at its exact physical address (§7). */
+    span = lo;
+    st = g_bs->AllocatePages(AllocateAddress, EfiLoaderData,
+                             (UINTN)((hi - lo) / EFI_PAGE_SIZE), &span);
+    if (EFI_ERROR(st)) {
+        log_hex("TocinBoot: ERROR: firmware owns part of kernel span [", lo,
+                ", ");
+        log_hex("", hi, ")");
+        log_hex(" — AllocatePages(AllocateAddress) failed with status ", st,
+                "\n");
+        g_bs->Stall(3 * 1000 * 1000);
+        return st;
+    }
+
+    /* Pass 2: place every segment, zero the BSS tails. */
+    for (i = 0; i < eh->e_phnum; i++) {
+        const Elf64_Phdr *ph =
+            (const Elf64_Phdr *)(img + eh->e_phoff +
+                                 (UINTN)i * eh->e_phentsize);
+
+        if (ph->p_type != PT_LOAD || !ph->p_memsz)
+            continue;
+        memcpy((VOID *)(UINTN)ph->p_paddr, img + (UINTN)ph->p_offset,
+               (UINTN)ph->p_filesz);
+        memset((UINT8 *)(UINTN)ph->p_paddr + ph->p_filesz, 0,
+               (UINTN)(ph->p_memsz - ph->p_filesz));
+        log_hex("TocinBoot:   PT_LOAD paddr ", ph->p_paddr, "");
+        log_hex(" filesz ", ph->p_filesz, "");
+        log_hex(" memsz ", ph->p_memsz, " loaded\n");
+    }
+
+    bi->kernel_phys_base = lo;
+    bi->kernel_phys_end = hi;
+    bi->kernel_entry = eh->e_entry;
+    return EFI_SUCCESS;
+}
+
 /* ---- memory map normalization (spec §4) ------------------------------------ */
 
 static UINT32 efi_type_to_tocinboot(UINT32 t)
@@ -598,6 +712,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     UINT32 desc_ver;
     EFI_STATUS st;
     int attempt;
+    int is64 = 0;
     INTN nmm = 0;
 
     g_st = SystemTable;
@@ -660,18 +775,18 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         return fail("KERNEL.ELF is not an ELF file", 0);
 
     if (img[4] == ELFCLASS64) {
-        /* Spec §9: the 64-bit path lands with the M2 kernel. Stop cleanly. */
-        logs("ELF64 kernel: 64-bit long-mode handoff lands with the M2 "
-             "kernel\n");
-        g_bs->Stall(3 * 1000 * 1000);
-        return EFI_SUCCESS;
-    }
-    if (img[4] != ELFCLASS32)
+        /* M2: 64-bit long-mode handoff (spec §6.2) — no mode drop needed. */
+        is64 = 1;
+        st = elf64_load(img, ksize, bi);
+        if (EFI_ERROR(st))
+            return st; /* diagnostics already printed */
+    } else if (img[4] == ELFCLASS32) {
+        st = elf32_load(img, ksize, bi);
+        if (EFI_ERROR(st))
+            return st; /* diagnostics already printed */
+    } else {
         return fail("KERNEL.ELF has unknown ELF class", 0);
-
-    st = elf32_load(img, ksize, bi);
-    if (EFI_ERROR(st))
-        return st; /* diagnostics already printed */
+    }
 
     /* Optional command line (spec §7): strip one trailing CR/LF, NUL-term. */
     st = load_file(root, u"\\EFI\\TOCINOS\\CMDLINE.TXT", 1, &cfile, &csize);
@@ -704,12 +819,15 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         bi->flags |= TOCINBOOT_F_RSDP;
     }
 
-    /* Trampoline: copy blob, patch the three handoff slots. */
-    tp = (UINT8 *)(UINTN)tramp;
-    memcpy(tp, handoff32_blob, sizeof(handoff32_blob));
-    *(UINT64 *)(tp + TB_HANDOFF32_SLOT_INFO) = (UINT64)(UINTN)bi;
-    *(UINT64 *)(tp + TB_HANDOFF32_SLOT_ENTRY) = bi->kernel_entry;
-    *(UINT64 *)(tp + TB_HANDOFF32_SLOT_STACK) = stack_top;
+    /* Trampoline: copy blob, patch the three handoff slots (32-bit entry
+     * only — the 64-bit entry stays in long mode, no mode-drop trampoline). */
+    if (!is64) {
+        tp = (UINT8 *)(UINTN)tramp;
+        memcpy(tp, handoff32_blob, sizeof(handoff32_blob));
+        *(UINT64 *)(tp + TB_HANDOFF32_SLOT_INFO) = (UINT64)(UINTN)bi;
+        *(UINT64 *)(tp + TB_HANDOFF32_SLOT_ENTRY) = bi->kernel_entry;
+        *(UINT64 *)(tp + TB_HANDOFF32_SLOT_STACK) = stack_top;
+    }
 
     /* All summaries BEFORE the final GetMemoryMap (spec EBS discipline). */
     log_hex("TocinBoot: kernel span   [", bi->kernel_phys_base, ", ");
@@ -769,10 +887,32 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         fmt_dec64(b, (UINT64)nmm);
         serial_puts(b);
         serial_puts(" memory map entries\n");
-        serial_puts("TocinBoot: dropping to 32-bit protected mode, jmp ");
+        serial_puts(is64 ? "TocinBoot: 64-bit long-mode handoff, jmp "
+                         : "TocinBoot: dropping to 32-bit protected mode, jmp ");
         fmt_hex64(b, bi->kernel_entry);
         serial_puts(b);
         serial_puts("\n");
+    }
+
+    if (is64) {
+        /*
+         * 64-bit long-mode entry (spec §6.2): stay on the firmware's
+         * identity-mapped page tables (which cover every region in the
+         * memory map and the framebuffer; the §6.3 caveat applies —
+         * loader/firmware tables may live in USABLE memory). Pin
+         * RAX=TOCINBOOT_REG_MAGIC ("a") and RDI=&tocinboot_info ("D",
+         * also the SysV first argument), point RSP at the 16-byte-aligned
+         * loader stack top, and jmp (not call) to e_entry. Never returns.
+         */
+        __asm__ volatile("cli\n\t"
+                         "movq %[stk], %%rsp\n\t"
+                         "jmp *%[ent]"
+                         :
+                         : [stk] "r"(stack_top), [ent] "r"(bi->kernel_entry),
+                           "a"((UINT64)TOCINBOOT_REG_MAGIC),
+                           "D"((UINT64)(UINTN)bi)
+                         : "memory");
+        __builtin_unreachable();
     }
 
     /* Jump (not call) into the trampoline; it never returns. */

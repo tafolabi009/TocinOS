@@ -80,12 +80,14 @@ OS_IMAGE = $(BUILD_DIR)/TocinOS.img
 all: check-deps directories
 	@echo ""
 	@START_TIME=$$(date +%s); \
-	$(MAKE) --no-print-directory $(OS_IMAGE); \
+	$(MAKE) --no-print-directory $(OS_IMAGE); rc=$$?; \
 	END_TIME=$$(date +%s); \
 	BUILD_TIME=$$((END_TIME - START_TIME)); \
 	echo ""; \
-	echo "Build complete in $${BUILD_TIME}s!"; \
-	echo ""
+	if [ $$rc -eq 0 ]; then echo "Build complete in $${BUILD_TIME}s!"; \
+	else echo "BUILD FAILED after $${BUILD_TIME}s"; fi; \
+	echo ""; \
+	exit $$rc
 
 directories:
 	@mkdir -p $(BUILD_DIR)
@@ -371,4 +373,25 @@ help:
 	@echo "  make docs            # Generate documentation"
 	@echo "  make format          # Format all source code"
 	@echo "  make analyze         # Run static analysis"
+
+# ---------------------------------------------------------------------------
+# M2 bring-up: minimal 64-bit stub kernel (TocinBoot §6.2 handoff proof).
+# Standalone ELF64 binary — kernel/arch/x86_64/{entry64_stub.asm,boot64_stub.c}
+# linked with linker_x86_64_stub.ld at 2 MiB. Boot it via the TocinBoot ELF64
+# path: `make kernel64-stub && make -C boot/uefi test64`.
+# (New target lines only; the rules above are untouched.)
+# ---------------------------------------------------------------------------
+KERNEL64_STUB_ELF = $(BUILD_DIR)/kernel64_stub.elf
+KERNEL64_STUB_CFLAGS = -m64 -ffreestanding -fno-pie -fno-pic -nostdlib \
+                       -nostdinc -fno-builtin -fno-stack-protector \
+                       -mno-red-zone -Wall -Wextra -I$(INCLUDE_DIR)
+
+.PHONY: kernel64-stub
+kernel64-stub: directories
+	$(msg) "AS" "$(BUILD_DIR)/entry64_stub.o"
+	$(Q)$(AS) -f elf64 $(KERNEL_DIR)/arch/x86_64/entry64_stub.asm -o $(BUILD_DIR)/entry64_stub.o
+	$(msg) "CC" "$(KERNEL_DIR)/arch/x86_64/boot64_stub.c"
+	$(Q)$(CC) $(KERNEL64_STUB_CFLAGS) -c $(KERNEL_DIR)/arch/x86_64/boot64_stub.c -o $(BUILD_DIR)/boot64_stub.o
+	$(msg) "LD" "$(KERNEL64_STUB_ELF)"
+	$(Q)$(LD) -m elf_x86_64 -T linker_x86_64_stub.ld -o $(KERNEL64_STUB_ELF) $(BUILD_DIR)/entry64_stub.o $(BUILD_DIR)/boot64_stub.o
 
