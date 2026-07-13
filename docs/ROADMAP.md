@@ -147,14 +147,17 @@ source Feb 2026):
 - **Tocin (hosted)** — **first-class userspace language from M5:** system utilities,
   `mkfs.tocinfs`/`fsck`, the GUI toolkit and apps, services. It has GC, threads, channels,
   C FFI — a strong app language on top of our libc.
-- **Tocin (freestanding)** — kernel *leaf modules only* for now (its freestanding mode is
-  real but thin: int-addressed memory, no typed pointers, host-triple-only codegen).
-  Upstream tocinlang work needed before deeper kernel use, filed as issues there:
-  1. typed pointers + `repr(C)` struct layout (MMIO register structs)
-  2. cross-compilation: `--target x86_64-unknown-none`, code model, red-zone control
-  3. naked/interrupt function attributes + calling-convention control
-  4. runtime-free aggregates in freestanding mode
-  5. entry-point/linker-script ergonomics
+- **Tocin (freestanding)** — the five upstream compiler gaps identified in the
+  Feb 2026 assessment are now **closed on tocinlang master** (PRs #39–41: bootable
+  kernel + module-level asm + cross-compilation + naked/interrupt attributes;
+  typed MMIO structs via `mmio struct`/`mmioAt`; escape analysis stack-allocating
+  non-escaping structs, removing the allocator dependency for local aggregates —
+  verified: master builds clean, JIT + ctest suites pass, non-escaping struct
+  emits zero `__tocin_alloc` references). Kernel-side Tocin is therefore
+  unblocked: first targets are leaf driver modules (typed-MMIO fit) in the M4
+  driver build-out and `mkfs.tocinfs`/`fsck.tocinfs` at M4–M5 as planned. A
+  toolchain hook (`TOCIN=` in the build, Tocin objects linked into kernel.elf
+  via the C ABI) lands with the first such module.
 
 ---
 
