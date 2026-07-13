@@ -212,7 +212,10 @@ in CI. Order encodes hard dependencies.
       validated with boot summary on serial (`kernel/bootinfo.c`), memmap-driven PMM
       reservations (`pmm_init_from_bootinfo`, conservative v1 — BOOTLOADER reclaim is M2),
       GOP framebuffer plumbed into the VESA driver; legacy boot paths behave exactly as before
-- [ ] BIOS stage2 produces the same handoff struct
+- [x] BIOS stage2 produces the same handoff struct (E820-sourced memmap, EAX/EBX
+      register contract per §6.1; raw-image kernel load fixed — CHS geometry now
+      queried via INT 13h AH=08h, full image staged and copied to its 1 MiB link
+      address, entry at 0x101000)
 - [x] Graphical splash; kernel renders to GOP framebuffer
 - **Accept:** same kernel binary boots via BIOS and UEFI paths in CI
 

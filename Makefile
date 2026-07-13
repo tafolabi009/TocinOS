@@ -165,8 +165,15 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 	$(Q)$(OBJCOPY) -O binary $(KERNEL_ELF) $(KERNEL_BIN)
 
 # Create OS image
+# Layout: LBA 0 = MBR, LBA 1-16 = stage2 (16 sectors), LBA 17+ = raw kernel.bin.
+# stage2 stages at most KERNEL_MAX_SECTORS (512) kernel sectors (256 KiB); the
+# guard below fails the build instead of silently truncating a grown kernel.
 $(OS_IMAGE): $(MBR_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
 	$(msg) "IMAGE" "$@"
+	$(Q)sz=$$(wc -c < $(KERNEL_BIN)); if [ $$sz -gt 262144 ]; then \
+		echo "ERROR: kernel.bin ($$sz bytes) exceeds the stage2 staging budget"; \
+		echo "       (262144 = KERNEL_MAX_SECTORS*512, boot/stage2/stage2.asm)"; \
+		exit 1; fi
 	$(Q)dd if=/dev/zero of=$(OS_IMAGE) bs=512 count=2880 2>/dev/null
 	$(Q)dd if=$(MBR_BIN) of=$(OS_IMAGE) bs=512 count=1 conv=notrunc 2>/dev/null
 	$(Q)dd if=$(STAGE2_BIN) of=$(OS_IMAGE) bs=512 seek=1 count=16 conv=notrunc 2>/dev/null
