@@ -108,4 +108,34 @@ TEST_SUITE(pmm_tests)
         }
     END_TEST_CASE()
 
+    // Roadmap bug #6: pmm_set_page_used must be idempotent — marking an
+    // already-used page (or an out-of-window page) must not disturb the
+    // used_pages counter.
+    TEST_CASE(set_page_used_idempotent)
+        pmm_init();
+        ASSERT_EQ(pmm_get_used_pages(), RESERVED_PAGES, "Baseline after init");
+
+        pmm_set_page_used(600);
+        ASSERT_EQ(pmm_get_used_pages(), RESERVED_PAGES + 1,
+                  "First mark counts once");
+
+        pmm_set_page_used(600);
+        pmm_set_page_used(600);
+        ASSERT_EQ(pmm_get_used_pages(), RESERVED_PAGES + 1,
+                  "Re-marking the same page never double-counts");
+
+        pmm_set_page_used(0);  /* already reserved by init */
+        ASSERT_EQ(pmm_get_used_pages(), RESERVED_PAGES + 1,
+                  "Marking an init-reserved page is a no-op");
+
+        pmm_set_page_used(TOTAL_PAGES);       /* first page past the window */
+        pmm_set_page_used(TOTAL_PAGES + 99);  /* far out of range */
+        ASSERT_EQ(pmm_get_used_pages(), RESERVED_PAGES + 1,
+                  "Out-of-window pages are ignored");
+
+        pmm_free_page(600 * 0x1000u);
+        ASSERT_EQ(pmm_get_used_pages(), RESERVED_PAGES,
+                  "Marked page frees back exactly once");
+    END_TEST_CASE()
+
 END_TEST_SUITE()

@@ -98,9 +98,14 @@ static void mm_selftest(void) {
     process_wait(child, &status, WNOHANG);    /* reap -> drop child refs */
     uint32_t refs_old_after_reap = frame_ref_get(phys_before);
 
+    /* Read back BEFORE munmap — the mapping is gone afterwards, and a
+     * post-unmap dereference is an unresolvable kernel-context #PF
+     * (which is exactly what the fault path should and does do). */
+    uint32_t final_word = *word;
+
     sys_munmap(p, 2 * PAGE_SIZE);
 
-    if (refs_shared == 2 && *word == 0xC0FFEE42u &&
+    if (refs_shared == 2 && final_word == 0xC0FFEE42u &&
         phys_after && phys_after != phys_before &&
         refs_old_after_reap == 0) {
         serial_printf("[MM] COW fork enabled: write copied frame "
