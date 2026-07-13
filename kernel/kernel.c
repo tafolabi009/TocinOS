@@ -5,6 +5,7 @@
  */
 
 #include "../include/kernel/kernel.h"
+#include "../include/kernel/bootinfo.h"
 #include "../include/kernel/memory.h"
 #include "../include/kernel/task.h"
 #include "../include/kernel/cpu_info.h"
@@ -27,6 +28,7 @@
 #include "../include/kernel/tmpfs.h"
 #include "../include/drivers/mdf.h"
 #include "../include/drivers/vesa.h"
+#include "../include/drivers/fbcon.h"
 #include "../include/drivers/ide.h"
 #include "../include/drivers/net.h"
 #include "../include/drivers/usb_core.h"
@@ -55,6 +57,14 @@ void screen_clear(void) {
  * Print a string to the screen
  */
 void kernel_print(const char *str) {
+    // Mirror every kernel_print() line (the '[*]' init log included) onto
+    // the framebuffer splash console when it is active. This single hook
+    // is the cheapest way to mirror the boot log; before fbcon_init()
+    // runs, fbcon_active() is 0 and this is a no-op. Serial output is not
+    // routed through here, so serial logs are unaffected.
+    if (fbcon_active()) {
+        fbcon_puts(str);
+    }
     while (*str) {
         if (*str == '\n') {
             vga_x = 0;
@@ -107,10 +117,14 @@ void kernel_main(void) {
     serial_init(COM1);
     serial_printf("\n\n=== TocinOS Booting ===\n");
     serial_printf("[EARLY] Serial initialized\n");
-    
+
+    // Consume the TocinBoot handoff (if any) while paging is still off and
+    // every physical address in tocinboot_info is directly dereferenceable.
+    bootinfo_init();
+
     screen_clear();
     
-    kernel_print("TocinOS v1.0\n");
+    kernel_print("TocinOS v2.0\n");
     serial_printf("[KERNEL] VGA cleared, starting init...\n");
     kernel_print("=============\n\n");
     
@@ -124,12 +138,26 @@ void kernel_main(void) {
     // Initialize memory management
     serial_printf("[INIT] PMM init...\n");
     kernel_print("[*] Initializing Physical Memory Manager...\n");
-    pmm_init();
+    if (bootinfo_present()) {
+        // Same 128MB bitmap, plus reservations from the TocinBoot memory map.
+        pmm_init_from_bootinfo(bootinfo_get());
+        serial_printf("[PMM] bootinfo memmap applied: %u/%u pages reserved\n",
+                      pmm_get_used_pages(), pmm_get_total_pages());
+    } else {
+        pmm_init();
+    }
     
     serial_printf("[INIT] VMM init...\n");
     kernel_print("[*] Initializing Virtual Memory Manager...\n");
     vmm_init();
-    
+
+    // Framebuffer splash (M1): needs bootinfo (fb description) AND paging
+    // (fbcon identity-maps the fb MMIO range, which lies above the
+    // identity-mapped low 4MB), so this is the earliest safe point.
+    // No-op on legacy boot paths without a tocinboot framebuffer.
+    fbcon_init();
+
+
     // Initialize task scheduler
     serial_printf("[INIT] Scheduler init...\n");
     kernel_print("[*] Initializing Task Scheduler...\n");

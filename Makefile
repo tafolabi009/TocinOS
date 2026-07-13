@@ -80,12 +80,14 @@ OS_IMAGE = $(BUILD_DIR)/TocinOS.img
 all: check-deps directories
 	@echo ""
 	@START_TIME=$$(date +%s); \
-	$(MAKE) --no-print-directory $(OS_IMAGE); \
+	$(MAKE) --no-print-directory $(OS_IMAGE); rc=$$?; \
 	END_TIME=$$(date +%s); \
 	BUILD_TIME=$$((END_TIME - START_TIME)); \
 	echo ""; \
-	echo "Build complete in $${BUILD_TIME}s!"; \
-	echo ""
+	if [ $$rc -eq 0 ]; then echo "Build complete in $${BUILD_TIME}s!"; \
+	else echo "BUILD FAILED after $${BUILD_TIME}s"; fi; \
+	echo ""; \
+	exit $$rc
 
 directories:
 	@mkdir -p $(BUILD_DIR)
@@ -141,6 +143,15 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/%.c
 $(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/usb/%.c
 	$(msg) "CC" "$<"
 	$(Q)$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(KERNEL_DIR)/drivers/net/%.c
+	$(msg) "CC" "$<"
+	$(Q)$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(KERNEL_DIR)/net/%.c
+	$(msg) "CC" "$<"
+	$(Q)$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/%.o: $(KERNEL_DIR)/fs/%.c
 	$(msg) "CC" "$<"
 	$(Q)$(CC) $(CFLAGS) -c $< -o $@
@@ -156,8 +167,15 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 	$(Q)$(OBJCOPY) -O binary $(KERNEL_ELF) $(KERNEL_BIN)
 
 # Create OS image
+# Layout: LBA 0 = MBR, LBA 1-16 = stage2 (16 sectors), LBA 17+ = raw kernel.bin.
+# stage2 stages at most KERNEL_MAX_SECTORS (512) kernel sectors (256 KiB); the
+# guard below fails the build instead of silently truncating a grown kernel.
 $(OS_IMAGE): $(MBR_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
 	$(msg) "IMAGE" "$@"
+	$(Q)sz=$$(wc -c < $(KERNEL_BIN)); if [ $$sz -gt 262144 ]; then \
+		echo "ERROR: kernel.bin ($$sz bytes) exceeds the stage2 staging budget"; \
+		echo "       (262144 = KERNEL_MAX_SECTORS*512, boot/stage2/stage2.asm)"; \
+		exit 1; fi
 	$(Q)dd if=/dev/zero of=$(OS_IMAGE) bs=512 count=2880 2>/dev/null
 	$(Q)dd if=$(MBR_BIN) of=$(OS_IMAGE) bs=512 count=1 conv=notrunc 2>/dev/null
 	$(Q)dd if=$(STAGE2_BIN) of=$(OS_IMAGE) bs=512 seek=1 count=16 conv=notrunc 2>/dev/null
@@ -168,12 +186,22 @@ $(OS_IMAGE): $(MBR_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
 
 test: test-unit test-integration
 
+# test-unit compiles the REAL kernel sources listed below into a host
+# binary; hardware seams are stubbed in tests/framework/. -I$(KERNEL_DIR)
+# resolves the kernel's relative "../include/..." includes. -DSTDINT_H
+# -include stdint.h force the host <stdint.h> and skip the freestanding
+# include/stdint.h (their 64-bit typedefs conflict on x86-64 hosts).
 test-unit:
 	@echo "Running unit tests..."
 	@if [ -d tests/unit ]; then \
 		mkdir -p $(BUILD_DIR); \
-		$(CC) -Itests/framework tests/test_runner.c tests/unit/*.c tests/framework/*.c -o $(BUILD_DIR)/test_runner 2>&1 || \
-		(echo "Failed to compile tests" && exit 1); \
+		$(CC) -O2 -Itests/framework -I$(KERNEL_DIR) -Wno-int-to-pointer-cast \
+			-Wno-pointer-to-int-cast -DSTDINT_H -include stdint.h \
+			tests/test_runner.c tests/unit/*.c tests/framework/*.c \
+			$(KERNEL_DIR)/mm/pmm.c $(KERNEL_DIR)/mm/vmm.c \
+			$(KERNEL_DIR)/task/scheduler.c $(KERNEL_DIR)/fat.c \
+			-o $(BUILD_DIR)/test_runner 2>&1 || \
+		{ echo "Failed to compile tests"; exit 1; }; \
 		$(BUILD_DIR)/test_runner; \
 	else \
 		echo "No unit tests found. Run 'make setup-tests' to create test infrastructure."; \
@@ -212,6 +240,14 @@ docs-clean:
 	@echo "Cleaning documentation..."
 	@rm -rf docs/html docs/latex
 
+# TocinBoot UEFI bootloader (see boot/uefi/ and docs/BOOT_PROTOCOL.md)
+.PHONY: uefi run-uefi
+uefi: all
+	$(MAKE) -C boot/uefi img
+
+run-uefi: uefi
+	$(MAKE) -C boot/uefi test
+
 # Run in QEMU
 run: all
 	@echo "Running TocinOS in QEMU..."
@@ -226,6 +262,7 @@ run64: all
 clean:
 	$(msg) "CLEAN" "build artifacts"
 	$(Q)rm -rf $(BUILD_DIR)
+	$(Q)$(MAKE) --no-print-directory -C boot/uefi clean
 
 clean-all: clean docs-clean
 	$(msg) "CLEAN" "all generated files"
@@ -336,4 +373,25 @@ help:
 	@echo "  make docs            # Generate documentation"
 	@echo "  make format          # Format all source code"
 	@echo "  make analyze         # Run static analysis"
+
+# ---------------------------------------------------------------------------
+# M2 bring-up: minimal 64-bit stub kernel (TocinBoot §6.2 handoff proof).
+# Standalone ELF64 binary — kernel/arch/x86_64/{entry64_stub.asm,boot64_stub.c}
+# linked with linker_x86_64_stub.ld at 2 MiB. Boot it via the TocinBoot ELF64
+# path: `make kernel64-stub && make -C boot/uefi test64`.
+# (New target lines only; the rules above are untouched.)
+# ---------------------------------------------------------------------------
+KERNEL64_STUB_ELF = $(BUILD_DIR)/kernel64_stub.elf
+KERNEL64_STUB_CFLAGS = -m64 -ffreestanding -fno-pie -fno-pic -nostdlib \
+                       -nostdinc -fno-builtin -fno-stack-protector \
+                       -mno-red-zone -Wall -Wextra -I$(INCLUDE_DIR)
+
+.PHONY: kernel64-stub
+kernel64-stub: directories
+	$(msg) "AS" "$(BUILD_DIR)/entry64_stub.o"
+	$(Q)$(AS) -f elf64 $(KERNEL_DIR)/arch/x86_64/entry64_stub.asm -o $(BUILD_DIR)/entry64_stub.o
+	$(msg) "CC" "$(KERNEL_DIR)/arch/x86_64/boot64_stub.c"
+	$(Q)$(CC) $(KERNEL64_STUB_CFLAGS) -c $(KERNEL_DIR)/arch/x86_64/boot64_stub.c -o $(BUILD_DIR)/boot64_stub.o
+	$(msg) "LD" "$(KERNEL64_STUB_ELF)"
+	$(Q)$(LD) -m elf_x86_64 -T linker_x86_64_stub.ld -o $(KERNEL64_STUB_ELF) $(BUILD_DIR)/entry64_stub.o $(BUILD_DIR)/boot64_stub.o
 

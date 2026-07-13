@@ -3,9 +3,23 @@
 [BITS 64]
 [EXTERN kernel_main]
 [GLOBAL _start]
+[GLOBAL tocinboot_magic_reg]
+[GLOBAL tocinboot_info_ptr]
+
+; TocinBoot handoff registers (docs/BOOT_PROTOCOL.md §6.2): RAX=magic,
+; RDI=phys addr of tocinboot_info (guaranteed < 4 GiB, low halves suffice).
+; kernel/bootinfo.c validates both magics before trusting them.
+section .data
+align 4
+tocinboot_magic_reg: dd 0
+tocinboot_info_ptr:  dd 0
 
 section .text
 _start:
+    ; Capture the TocinBoot register contract FIRST
+    mov [tocinboot_magic_reg], eax
+    mov [tocinboot_info_ptr], edi
+
     ; Initialize stack
     mov rsp, kernel_stack_top
     

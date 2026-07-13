@@ -246,16 +246,16 @@ TocinOS is **not** intended to be:
 - Binary-compatible with Linux/Windows applications
 - A hypervisor or virtualization platform
 
-## Post-v2.0 Roadmap (Planned)
+## Roadmap
 
-Future releases may include:
+TocinOS is evolving into a general-purpose operating system — custom UEFI bootloader
+(TocinBoot), petabyte-scale filesystem (TocinFS v2), native `.tox`/`.tap` executable and
+packaging formats, Linux application compatibility, a compositor-based GUI, and userspace
+development in the [Tocin language](https://github.com/tafolabi009/tocinlang) alongside
+C and C++.
 
-1. **v2.1** — POSIX threads (pthreads), clone() syscall
-2. **v2.2** — Shared library support (libc.so loading)
-3. **v2.3** — Enhanced memory management (mmap, demand paging)
-4. **v3.0** — ext4 filesystem, USB storage
-5. **v3.1** — TCP/IP networking stack
-6. **v4.0** — UEFI boot support, x86-64 userspace
+See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full architecture decisions, milestone
+plan (M0–M8), and acceptance criteria.
 
 ## Contributing
 

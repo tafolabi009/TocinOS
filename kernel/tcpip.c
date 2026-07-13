@@ -11,11 +11,6 @@
 static net_interface_t net_iface = {0};
 static int tcpip_initialized = 0;
 
-// Socket table
-#define MAX_SOCKETS 64
-static tcp_socket_t socket_table[MAX_SOCKETS];
-static int socket_bitmap[MAX_SOCKETS / 32];
-
 /**
  * Initialize TCP/IP stack
  */
@@ -23,21 +18,12 @@ int tcpip_init(void) {
     if (tcpip_initialized) {
         return 0;
     }
-    
-    // Clear socket table
-    for (int i = 0; i < MAX_SOCKETS; i++) {
-        socket_table[i].local_ip = 0;
-        socket_table[i].remote_ip = 0;
-        socket_table[i].local_port = 0;
-        socket_table[i].remote_port = 0;
-        socket_table[i].protocol = 0;
-        socket_table[i].state = 0;
-    }
-    
-    for (int i = 0; i < MAX_SOCKETS / 32; i++) {
-        socket_bitmap[i] = 0;
-    }
-    
+
+    // Initialize protocol layers (kernel/net)
+    arp_init();
+    tcp_init();
+    udp_init();
+
     // Initialize interface
     net_iface.ip_addr = 0;
     net_iface.netmask = 0;
@@ -161,6 +147,20 @@ int ip_send(uint32_t dest_ip, uint8_t protocol, const void *data, uint16_t lengt
 }
 
 /**
+ * Send IP packet (kernel/net stack entry point)
+ */
+int ip_send_packet(uint32_t dest_ip, uint8_t protocol, const void *data, uint16_t length) {
+    return ip_send(dest_ip, protocol, data, length);
+}
+
+/**
+ * Get local interface IP address
+ */
+uint32_t tcpip_get_local_ip(void) {
+    return net_iface.ip_addr;
+}
+
+/**
  * Receive IP packet
  */
 int ip_receive(const void *packet, uint16_t length) {
@@ -185,130 +185,24 @@ int ip_receive(const void *packet, uint16_t length) {
     const void *payload = (const uint8_t *)packet + sizeof(ipv4_header_t);
     uint16_t payload_length = ntohs(header->total_length) - sizeof(ipv4_header_t);
     
+    uint32_t src_ip = ntohl(header->src_ip);
+    uint32_t dst_ip = ntohl(header->dest_ip);
+
     switch (header->protocol) {
         case IP_PROTO_ICMP:
-            // TODO: Handle ICMP
-            break;
-            
+            return icmp_receive(src_ip, payload, payload_length);
+
         case IP_PROTO_TCP:
-            // TODO: Handle TCP
-            break;
-            
+            return tcp_receive(src_ip, dst_ip, payload, payload_length);
+
         case IP_PROTO_UDP:
-            // TODO: Handle UDP
-            break;
-            
+            return udp_receive(src_ip, dst_ip, payload, payload_length);
+
         default:
             // Unknown protocol
             break;
     }
-    
-    return 0;
-}
 
-/**
- * Open TCP connection
- */
-int tcp_open(uint32_t dest_ip, uint16_t dest_port, uint16_t local_port) {
-    if (!tcpip_initialized) {
-        return -1;
-    }
-    
-    // Find free socket
-    int sockfd = -1;
-    for (int i = 0; i < MAX_SOCKETS; i++) {
-        int word = i / 32;
-        int bit = i % 32;
-        if (!(socket_bitmap[word] & (1 << bit))) {
-            socket_bitmap[word] |= (1 << bit);
-            sockfd = i;
-            break;
-        }
-    }
-    
-    if (sockfd < 0) {
-        return -1;
-    }
-    
-    // Initialize socket
-    socket_table[sockfd].local_ip = net_iface.ip_addr;
-    socket_table[sockfd].remote_ip = dest_ip;
-    socket_table[sockfd].local_port = local_port;
-    socket_table[sockfd].remote_port = dest_port;
-    socket_table[sockfd].protocol = IP_PROTO_TCP;
-    socket_table[sockfd].state = 0; // TODO: TCP state machine
-    socket_table[sockfd].seq_num = 0;
-    socket_table[sockfd].ack_num = 0;
-    
-    // TODO: Send SYN packet
-    
-    return sockfd;
-}
-
-/**
- * Close TCP connection
- */
-int tcp_close(int sockfd) {
-    if (!tcpip_initialized || sockfd < 0 || sockfd >= MAX_SOCKETS) {
-        return -1;
-    }
-    
-    int word = sockfd / 32;
-    int bit = sockfd % 32;
-    if (!(socket_bitmap[word] & (1 << bit))) {
-        return -1; // Socket not open
-    }
-    
-    // TODO: Send FIN packet
-    
-    // Clear socket
-    socket_table[sockfd].local_ip = 0;
-    socket_table[sockfd].remote_ip = 0;
-    socket_table[sockfd].local_port = 0;
-    socket_table[sockfd].remote_port = 0;
-    socket_table[sockfd].protocol = 0;
-    socket_table[sockfd].state = 0;
-    
-    socket_bitmap[word] &= ~(1 << bit);
-    return 0;
-}
-
-/**
- * Send data over TCP
- */
-int tcp_send(int sockfd, const void *data, uint16_t length) {
-    if (!tcpip_initialized || sockfd < 0 || sockfd >= MAX_SOCKETS || !data) {
-        return -1;
-    }
-    
-    // TODO: Build TCP packet and send
-    
-    return 0;
-}
-
-/**
- * Receive data from TCP
- */
-int tcp_receive(int sockfd, void *buffer, uint16_t max_length) {
-    if (!tcpip_initialized || sockfd < 0 || sockfd >= MAX_SOCKETS || !buffer) {
-        return -1;
-    }
-    
-    // TODO: Receive TCP data
-    
-    return 0;
-}
-
-/**
- * Send ICMP echo request (ping)
- */
-int icmp_echo_request(uint32_t dest_ip, uint16_t id, uint16_t seq, const void *data, uint16_t length) {
-    if (!tcpip_initialized) {
-        return -1;
-    }
-    
-    // TODO: Build and send ICMP echo request
-    
     return 0;
 }
 

@@ -16,6 +16,7 @@
 /* External functions */
 extern void serial_printf(const char *fmt, ...);
 extern int ip_send_packet(uint32_t dest_ip, uint8_t protocol, const void *data, uint16_t length);
+extern uint32_t timer_get_ticks(void);
 
 /* ================================================================
  * ICMP TYPES AND CODES
@@ -367,6 +368,3 @@ void icmp_get_stats(uint32_t *sent, uint32_t *received, uint32_t *errors) {
     if (received) *received = icmp_stats.msgs_received;
     if (errors) *errors = icmp_stats.errors;
 }
-
-/* External timer function */
-extern uint32_t timer_get_ticks(void);

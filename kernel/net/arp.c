@@ -16,7 +16,7 @@
 /* External functions */
 extern void serial_printf(const char *fmt, ...);
 extern uint32_t timer_get_ticks(void);
-extern int net_transmit(const void *data, uint16_t length);
+extern int net_send_packet(const void *data, uint16_t length);
 extern void net_get_mac_address(uint8_t *mac);
 
 /* ================================================================
@@ -213,7 +213,7 @@ int arp_send_request(uint32_t target_ip) {
                   (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
                   (target_ip >> 8) & 0xFF, target_ip & 0xFF);
     
-    return net_transmit(packet, sizeof(packet));
+    return net_send_packet(packet, sizeof(packet));
 }
 
 /**
@@ -240,7 +240,7 @@ int arp_send_reply(uint32_t target_ip, const uint8_t *target_mac) {
     arp_memcpy(arp->target_hw_addr, target_mac, 6);
     arp->target_proto_addr = htonl(target_ip);
     
-    return net_transmit(packet, sizeof(packet));
+    return net_send_packet(packet, sizeof(packet));
 }
 
 /**

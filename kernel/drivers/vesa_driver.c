@@ -7,6 +7,8 @@
 #include "../include/drivers/vesa.h"
 #include "../include/drivers/mdf.h"
 #include "../include/boot/boot_info.h"
+#include "../include/kernel/bootinfo.h"
+#include "../include/kernel/serial.h"
 
 // Global VESA context
 static vesa_context_t vesa_ctx = {0};
@@ -45,10 +47,30 @@ static uint8_t font8x8[96][8] = {
 
 /**
  * Initialize VESA driver from boot info
+ *
+ * Prefers the TocinBoot GOP framebuffer (docs/BOOT_PROTOCOL.md §5) when the
+ * kernel was entered via the TocinBoot protocol; otherwise falls back to the
+ * legacy BIOS boot_info_t block unchanged.
  */
 int vesa_init(void) {
+    const bootinfo_fb_t *fb = bootinfo_framebuffer();
+    if (fb) {
+        vesa_ctx.framebuffer = (uint32_t *)(unsigned long)fb->base;
+        vesa_ctx.width = fb->width;
+        vesa_ctx.height = fb->height;
+        vesa_ctx.pitch = fb->pitch;
+        vesa_ctx.bpp = (uint8_t)fb->bpp;
+        vesa_ctx.mode = 0; // Not a VBE mode number (GOP handoff)
+
+        vesa_initialized = 1;
+        serial_printf("[VESA] using tocinboot GOP framebuffer %ux%ux%u pitch=%u base=0x%x\n",
+                      fb->width, fb->height, fb->bpp, fb->pitch,
+                      (uint32_t)fb->base);
+        return 0;
+    }
+
     boot_info_t *boot_info = (boot_info_t *)BOOT_INFO_ADDRESS;
-    
+
     // Check if framebuffer is available
     if (boot_info->framebuffer_addr == 0) {
         return -1; // No framebuffer available
@@ -241,6 +263,9 @@ static int vesa_driver_init(void) {
  * VESA driver probe
  */
 static int vesa_driver_probe(void) {
+    if (bootinfo_framebuffer()) {
+        return 0; // TocinBoot GOP framebuffer available
+    }
     boot_info_t *boot_info = (boot_info_t *)BOOT_INFO_ADDRESS;
     return (boot_info->framebuffer_addr != 0) ? 0 : -1;
 }

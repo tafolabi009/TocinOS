@@ -5,6 +5,7 @@ build/
 *.img
 *.iso
 *.elf
+*.so
 
 # Test artifacts
 test_runner
