@@ -5,6 +5,7 @@
  */
 
 #include "../include/kernel/kernel.h"
+#include "../include/kernel/bootinfo.h"
 #include "../include/kernel/memory.h"
 #include "../include/kernel/task.h"
 #include "../include/kernel/cpu_info.h"
@@ -107,7 +108,11 @@ void kernel_main(void) {
     serial_init(COM1);
     serial_printf("\n\n=== TocinOS Booting ===\n");
     serial_printf("[EARLY] Serial initialized\n");
-    
+
+    // Consume the TocinBoot handoff (if any) while paging is still off and
+    // every physical address in tocinboot_info is directly dereferenceable.
+    bootinfo_init();
+
     screen_clear();
     
     kernel_print("TocinOS v2.0\n");
@@ -124,7 +129,14 @@ void kernel_main(void) {
     // Initialize memory management
     serial_printf("[INIT] PMM init...\n");
     kernel_print("[*] Initializing Physical Memory Manager...\n");
-    pmm_init();
+    if (bootinfo_present()) {
+        // Same 128MB bitmap, plus reservations from the TocinBoot memory map.
+        pmm_init_from_bootinfo(bootinfo_get());
+        serial_printf("[PMM] bootinfo memmap applied: %u/%u pages reserved\n",
+                      pmm_get_used_pages(), pmm_get_total_pages());
+    } else {
+        pmm_init();
+    }
     
     serial_printf("[INIT] VMM init...\n");
     kernel_print("[*] Initializing Virtual Memory Manager...\n");

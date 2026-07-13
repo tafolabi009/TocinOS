@@ -35,6 +35,67 @@ void pmm_init(void) {
 }
 
 /**
+ * Mark every page overlapping [base, base+length) as used, clamped to the
+ * managed 128MB window. Already-used pages are skipped so used_pages stays
+ * exact when regions overlap (e.g. the always-reserved first 2MB).
+ */
+static void pmm_reserve_range(tb_u64 base, tb_u64 length) {
+    if (length == 0 || base >= (tb_u64)MEMORY_SIZE) {
+        return;
+    }
+    tb_u64 end = base + length;
+    if (end < base || end > (tb_u64)MEMORY_SIZE) {
+        end = MEMORY_SIZE;  // clamp to window (also handles u64 wrap)
+    }
+    unsigned int first = (unsigned int)(base / PAGE_SIZE);
+    unsigned int last = (unsigned int)((end + PAGE_SIZE - 1) / PAGE_SIZE);
+    for (unsigned int page = first; page < last; page++) {
+        unsigned int byte = page / 8;
+        unsigned int bit = page % 8;
+        if (!(memory_bitmap[byte] & (1u << bit))) {
+            memory_bitmap[byte] |= (1u << bit);
+            used_pages++;
+        }
+    }
+}
+
+/**
+ * Initialize the PMM from a TocinBoot memory map (docs/BOOT_PROTOCOL.md §4).
+ *
+ * Conservative v1: identical bitmap and low-2MB reservation as pmm_init(),
+ * plus reservations for every non-USABLE memmap region inside the 128MB
+ * window (BOOTLOADER included — reclaim is M2, spec §4.2) and for the
+ * framebuffer range if it lies below 128MB.
+ */
+void pmm_init_from_bootinfo(const tocinboot_info *info) {
+    pmm_init();
+
+    if (!info) {
+        return;
+    }
+
+    // Iterate by memmap_entry_size, never by sizeof (spec §8.6).
+    if (info->memmap_addr != 0 && info->memmap_count != 0 &&
+        info->memmap_entry_size >= sizeof(tocinboot_mmap_entry)) {
+        const unsigned char *p =
+            (const unsigned char *)(unsigned long)info->memmap_addr;
+        for (tb_u32 i = 0; i < info->memmap_count; i++) {
+            const tocinboot_mmap_entry *e = (const tocinboot_mmap_entry *)p;
+            if (e->type != TOCINBOOT_MEM_USABLE) {
+                pmm_reserve_range(e->base, e->length);
+            }
+            p += info->memmap_entry_size;
+        }
+    }
+
+    // Framebuffer is device memory; keep it out of the allocator (spec §5).
+    if ((info->flags & TOCINBOOT_F_FB) && info->fb_base != 0) {
+        pmm_reserve_range(info->fb_base,
+                          (tb_u64)info->fb_pitch * (tb_u64)info->fb_height);
+    }
+}
+
+/**
  * Allocate a physical page
  */
 unsigned int pmm_alloc_page(void) {

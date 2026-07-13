@@ -20,6 +20,7 @@
 #define MEMORY_H
 
 #include <stdint.h>
+#include "../boot/tocinboot.h"
 
 /** @defgroup PageDefs Page Size Definitions
  * @{
@@ -51,6 +52,21 @@
  * Sets up the page frame allocator and bitmap for tracking free pages.
  */
 void pmm_init(void);
+
+/**
+ * @brief Initialize the PMM from a TocinBoot memory map (conservative v1)
+ *
+ * Same 128 MiB bitmap as pmm_init() (which it calls first, so the first
+ * 2 MiB stay reserved), but additionally marks as used, within the 128 MiB
+ * window:
+ *  - every memmap region that is NOT type TOCINBOOT_MEM_USABLE — including
+ *    BOOTLOADER regions (reclaim is an M2 item, spec §4.2)
+ *  - the framebuffer range (fb_pitch * fb_height bytes), if handed off
+ *
+ * @param info Validated tocinboot_info (e.g. bootinfo_get()); NULL degrades
+ *             to plain pmm_init() behavior.
+ */
+void pmm_init_from_bootinfo(const tocinboot_info *info);
 
 /**
  * @brief Allocate a physical page

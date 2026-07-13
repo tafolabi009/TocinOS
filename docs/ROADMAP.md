@@ -207,9 +207,13 @@ in CI. Order encodes hard dependencies.
 | `kaslr`, `ipc`, `profiling`, `boot/uefi/*` (current form) | **M1/M2** — UEFI rewritten as TocinBoot; kaslr/ipc/profiling re-evaluated, wired or deleted |
 
 ### M1 — TocinBoot (custom bootloader)
-- UEFI app boots the kernel on QEMU/OVMF with `tocinboot_info` handoff (memmap, GOP fb, RSDP)
-- BIOS stage2 produces the same handoff struct
-- Graphical splash; kernel renders to GOP framebuffer
+- [x] UEFI app boots the kernel on QEMU/OVMF with `tocinboot_info` handoff (memmap, GOP fb, RSDP)
+- [x] Kernel consumes `tocinboot_info`: entry captures the register contract, both magics
+      validated with boot summary on serial (`kernel/bootinfo.c`), memmap-driven PMM
+      reservations (`pmm_init_from_bootinfo`, conservative v1 — BOOTLOADER reclaim is M2),
+      GOP framebuffer plumbed into the VESA driver; legacy boot paths behave exactly as before
+- [ ] BIOS stage2 produces the same handoff struct
+- [ ] Graphical splash; kernel renders to GOP framebuffer
 - **Accept:** same kernel binary boots via BIOS and UEFI paths in CI
 
 ### M2 — Memory management, for real + 64-bit userspace
