@@ -14,6 +14,8 @@
 extern void test_suite_pmm_tests(void);
 extern void test_suite_pmm_bootinfo_tests(void);
 extern void test_suite_vmm_tests(void);
+extern void test_suite_buddy_tests(void);
+extern void test_suite_slab_tests(void);
 extern void test_suite_scheduler_tests(void);
 extern void test_suite_fat_tests(void);
 
@@ -28,6 +30,8 @@ int main(void) {
     test_suite_pmm_tests();
     test_suite_pmm_bootinfo_tests();
     test_suite_vmm_tests();
+    test_suite_buddy_tests();
+    test_suite_slab_tests();
     test_suite_scheduler_tests();
     test_suite_fat_tests();
     

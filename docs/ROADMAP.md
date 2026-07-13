@@ -220,9 +220,18 @@ in CI. Order encodes hard dependencies.
 - **Accept:** same kernel binary boots via BIOS and UEFI paths in CI
 
 ### M2 — Memory management, for real + 64-bit userspace
-- Buddy allocator + slab live as *the* kernel allocators (delete bitmap-only path)
-- Demand paging + `mmap` backed by page cache; copy-on-write `fork`
-- x86-64: 4-level paging, `syscall`/`sysret`, 64-bit user programs
+- [x] Buddy allocator + slab live at boot: buddy owns [16MB, top) for page-range
+      allocations, slab-backed `kmalloc` on top (size-class caches ≤1KB, buddy
+      fallback above); PMM bitmap keeps [0, 16MB) for legacy single-page users
+      with a double-allocation guard — full bitmap retirement deferred until
+      demand paging lands
+- [ ] Demand paging + `mmap` backed by page cache; copy-on-write `fork`
+- [x] x86-64 boot contract proven: TocinBoot ELF64 long-mode handoff (§6.2)
+      verified on OVMF with a 64-bit stub kernel (`make kernel64-stub` +
+      `make -C boot/uefi test64`)
+- [ ] x86-64 kernel port (staged: core → tasking/userspace → drivers; today
+      `ARCH=x86_64` fails on 5 files of 32-bit inline asm + ~178 pointer-width
+      sites + 2-level paging model), then `syscall`/`sysret`, 64-bit user programs
 - **Accept:** stress test (fork storm + mmap churn) survives; RSS budget check added to CI
 
 ### M3 — Processes & threads that work

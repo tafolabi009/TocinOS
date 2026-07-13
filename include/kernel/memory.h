@@ -141,57 +141,166 @@ unsigned int pmm_get_used_pages(void);
 unsigned int pmm_get_free_pages(void);
 
 // ==================== BUDDY ALLOCATOR ====================
+/*
+ * Physical page-range allocator for the HIGH region of RAM.
+ *
+ * Physical-memory ownership split (kernel.c wires this up at boot):
+ *
+ *   [0, 16MB)      PMM bitmap allocator (pmm_alloc_page): kernel image,
+ *                  page tables, and every legacy single-page user.
+ *   [16MB, top)    Buddy allocator: power-of-2 page-range allocations and
+ *                  the slab backing store (kmalloc). "top" is derived from
+ *                  the TocinBoot memory map (usable RAM only, non-usable
+ *                  regions and the framebuffer are excluded), capped at
+ *                  128MB — the PMM's window. Fallback without bootinfo:
+ *                  the fixed range [16MB, 112MB) inside the 128MB
+ *                  assumption.
+ *
+ * At boot, kernel.c marks every buddy-managed page as used in the PMM
+ * bitmap, so the two allocators can never hand out the same frame.
+ *
+ * Orders are 0..MAX_ORDER-1; an order-k block is (4KB << k), so the
+ * largest block is 4MB (order 10). The allocator never dereferences the
+ * memory it manages (all bookkeeping lives in a static descriptor table),
+ * so it is safe to initialize before the region is virtually mapped.
+ */
 
-#define MAX_ORDER 11  // 2^11 * 4KB = 8MB max allocation
+#define MAX_ORDER 11                     /**< Orders 0..10 => max block 4MB */
+#define BUDDY_REGION_START 0x01000000u   /**< 16MB: buddy space begins here */
+#define BUDDY_REGION_LIMIT 0x08000000u   /**< 128MB: hard cap (PMM window)  */
+#define BUDDY_FALLBACK_END 0x07000000u   /**< 112MB: no-bootinfo fallback   */
 
-typedef struct buddy_page {
-    struct buddy_page *next;
-    struct buddy_page *prev;
-    uint32_t order;          // Order in buddy system
-    uint32_t flags;          // Page flags
-    uint32_t ref_count;      // Reference counter
-} buddy_page_t;
+/* Opaque handle kept for the NUMA framework section below. */
+typedef struct buddy_allocator buddy_allocator_t;
 
-typedef struct {
-    buddy_page_t *free_lists[MAX_ORDER];
-    uint32_t free_pages[MAX_ORDER];
-    uint64_t total_free;
-    uint64_t total_used;
-} buddy_allocator_t;
+/**
+ * @brief Initialize the buddy allocator over [start_addr, end_addr).
+ *
+ * start_addr is aligned up and end_addr down to page boundaries; the span
+ * is clipped to the compile-time capacity (BUDDY_REGION_LIMIT -
+ * BUDDY_REGION_START bytes). Every page in the span becomes allocatable.
+ * Re-initialization is allowed (host unit tests rely on it).
+ *
+ * @return Number of managed (allocatable) pages, or -1 on a bad range.
+ */
+int buddy_init(uint32_t start_addr, uint32_t end_addr);
 
-// Buddy allocator functions
-void buddy_init(void);
+/**
+ * @brief Initialize the buddy allocator from a TocinBoot memory map.
+ *
+ * Region is [16MB, 128MB); only pages fully covered by USABLE memmap
+ * entries (minus any non-USABLE overlap and the framebuffer range) become
+ * allocatable. Must be called while physical addresses are still directly
+ * dereferenceable (before vmm_init), because the memmap entries live at
+ * their original physical address. NULL/invalid info degrades to
+ * buddy_init(BUDDY_REGION_START, BUDDY_FALLBACK_END).
+ *
+ * @return Number of managed (allocatable) pages, or -1 on failure.
+ */
+int buddy_init_from_bootinfo(const tocinboot_info *info);
+
+/** Allocate a block of (PAGE_SIZE << order) bytes; NULL if impossible. */
 void* buddy_alloc(uint32_t order);
-void buddy_free(void *addr, uint32_t order);
+
+/**
+ * @brief Free a block previously returned by buddy_alloc(order).
+ *
+ * Validated: addr must be the exact head of a live allocation of exactly
+ * this order. Double frees, mid-block pointers, foreign addresses and
+ * wrong orders are rejected.
+ *
+ * @return 0 on success, -1 if the free was rejected.
+ */
+int buddy_free(void *addr, uint32_t order);
+
+/**
+ * @brief Free a block using the order recorded at allocation time.
+ * @return The freed block's order (>= 0), or -1 if addr is not the head
+ *         of a live allocation. Used by kfree() for large allocations.
+ */
+int buddy_free_block(void *addr);
+
+/** Allocate >= num_pages contiguous pages (rounded up to a power of 2). */
 void* buddy_alloc_pages(uint32_t num_pages);
-void buddy_free_pages(void *addr, uint32_t num_pages);
+
+/** Free a buddy_alloc_pages(num_pages) block. 0 on success, -1 rejected. */
+int buddy_free_pages(void *addr, uint32_t num_pages);
+
+/**
+ * @brief Smallest order whose block holds size bytes.
+ * @return MAX_ORDER (an invalid order) when size exceeds the largest block.
+ */
 uint32_t buddy_get_order(uint32_t size);
 
+/** 1 if addr lies inside the buddy region span, else 0. */
+int buddy_owns(const void *addr);
+
+/** 1 if the page at addr is buddy-managed (inside span AND allocatable). */
+int buddy_addr_is_managed(uint32_t addr);
+
+/** Pages the buddy manages (allocatable capacity, holes excluded). */
+uint32_t buddy_get_managed_pages(void);
+
+/** Pages currently free. */
+uint32_t buddy_get_free_page_count(void);
+
+/** Number of free blocks currently on the given order's free list. */
+uint32_t buddy_free_blocks_of_order(uint32_t order);
+
+/** Region span actually configured (page-aligned, after clipping). */
+void buddy_get_region(uint32_t *start_addr, uint32_t *end_addr);
+
 // ==================== SLAB ALLOCATOR ====================
+/*
+ * Object caches on top of the buddy allocator. Every slab is one buddy
+ * order-0 page whose first bytes are the slab_t header (magic + owning
+ * cache back-pointer); objects follow at a 16-byte-aligned offset. That
+ * header is how kfree() finds the owning cache from a bare pointer:
+ *
+ *   kmalloc(size <= 1024)  -> size-class cache (8..1024), pointer is
+ *                             never page-aligned (objects sit after the
+ *                             in-page header).
+ *   kmalloc(size >  1024)  -> buddy_alloc() directly, pointer is always
+ *                             page-aligned.
+ *   kfree(ptr)             -> page-aligned ptr: buddy_free_block();
+ *                             otherwise: slab header at the page base.
+ *
+ * Guards: slab pages carry SLAB_MAGIC; kmem_cache_free() validates the
+ * magic, the owning cache, the object offset, and scans the slab free
+ * list to reject double frees. buddy_free_block() rejects double frees
+ * of large allocations.
+ */
 
 #define SLAB_NAME_LEN 32
 #define MAX_SLABS 64
+#define SLAB_MAGIC 0x51ABCAFEu           /**< live slab page marker */
+#define KMALLOC_MAX_SLAB_SIZE 1024u      /**< larger goes straight to buddy */
+
+struct kmem_cache;
 
 typedef struct slab {
-    struct slab *next;
-    void *free_list;         // Free objects in this slab
-    uint32_t inuse;          // Number of used objects
-    uint32_t total;          // Total objects in slab
+    uint32_t magic;              /**< SLAB_MAGIC while the slab is live */
+    struct kmem_cache *cache;    /**< owning cache (kfree lookup) */
+    struct slab *next;           /**< cache list link */
+    struct slab *prev;           /**< cache list link */
+    void *free_list;             /**< first free object in this slab */
+    uint32_t inuse;              /**< number of allocated objects */
+    uint32_t total;              /**< object capacity of this slab */
+    uint32_t list_id;            /**< which cache list this slab is on */
 } slab_t;
 
-typedef struct {
+typedef struct kmem_cache {
     char name[SLAB_NAME_LEN];
-    uint32_t obj_size;       // Size of each object
-    uint32_t align;          // Alignment requirement
-    uint32_t flags;          // Slab flags
-    slab_t *slabs_full;      // Fully allocated slabs
-    slab_t *slabs_partial;   // Partially allocated slabs
-    slab_t *slabs_free;      // Empty slabs
-    uint32_t num_slabs;      // Total slabs
-    uint32_t num_objs;       // Total objects
-    uint32_t num_active;     // Active objects
-    void (*ctor)(void *);    // Constructor
-    void (*dtor)(void *);    // Destructor
+    uint32_t obj_size;           /**< aligned object size */
+    uint32_t align;              /**< alignment requirement */
+    uint32_t flags;              /**< unused in v1 */
+    slab_t *slabs_full;          /**< slabs with no free object */
+    slab_t *slabs_partial;       /**< slabs with free and used objects */
+    slab_t *slabs_free;          /**< empty slabs (at most one is kept) */
+    uint32_t num_slabs;          /**< slab pages owned by this cache */
+    uint32_t num_active;         /**< live objects across all slabs */
+    void (*ctor)(void *);        /**< called on every allocation */
+    void (*dtor)(void *);        /**< called on every (valid) free */
 } kmem_cache_t;
 
 // Slab allocator functions
@@ -200,7 +309,10 @@ kmem_cache_t* kmem_cache_create(const char *name, uint32_t size, uint32_t align,
                                 uint32_t flags, void (*ctor)(void *), void (*dtor)(void *));
 void kmem_cache_destroy(kmem_cache_t *cache);
 void* kmem_cache_alloc(kmem_cache_t *cache);
-void kmem_cache_free(kmem_cache_t *cache, void *obj);
+
+/** @return 0 on success, -1 when the free is rejected (bad pointer, wrong
+ *  cache, or double free). */
+int kmem_cache_free(kmem_cache_t *cache, void *obj);
 
 // General purpose kernel memory allocation
 void* kmalloc(uint32_t size);
